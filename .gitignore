@@ -1,0 +1,7 @@
+# Secrets and runtime state live in ~/.config/claude-tg, never in this repo.
+config.json
+state.json
+*.sock
+*.log
+.env
+node_modules/
