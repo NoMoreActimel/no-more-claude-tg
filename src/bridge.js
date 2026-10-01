@@ -14,7 +14,7 @@ const HELP = [
   'Each Claude session that ran <code>/tg</code> shows up here.',
   '',
   '• Thread mode: write inside a session thread.',
-  '• Single chat: reply to a session message, or pick one with /sessions.',
+  '• Single chat: a plain message goes to the session that wrote last; reply to a message to pick another, or use /sessions.',
   '• Text, voice, photos and files all work.',
   '',
   '/sessions — who is connected',
@@ -89,6 +89,11 @@ export class Bridge {
   remember(messageId, sessionId) {
     this.state.msgMap.push([messageId, sessionId]);
     if (this.state.msgMap.length > MSG_MAP_LIMIT) this.state.msgMap.splice(0, this.state.msgMap.length - MSG_MAP_LIMIT);
+  }
+
+  // A plain (non-reply) message goes to whoever spoke last, so it follows the conversation.
+  spoke(sessionId) {
+    this.state.activeSessionId = sessionId;
   }
 
   liveChanged() {
@@ -276,6 +281,7 @@ export class Bridge {
       ids.push(m.message_id);
       this.remember(m.message_id, s.id);
     }
+    this.spoke(s.id);
     this.stopTyping(s.id);
     this.stats.sent += ids.length;
     this.saveState();
@@ -294,6 +300,7 @@ export class Bridge {
       return this.tg.upload(method, params, kind === 'photo' ? 'photo' : 'document', filePath, filename);
     });
     this.remember(m.message_id, s.id);
+    this.spoke(s.id);
     this.stopTyping(s.id);
     this.stats.sent += 1;
     this.saveState();

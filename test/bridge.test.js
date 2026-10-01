@@ -3,9 +3,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { Bridge } from '../src/bridge.js';
 import { DEFAULT_STATE } from '../src/store.js';
 
+const __filename = fileURLToPath(import.meta.url);
 const OWNER = 111;
 const STRANGER = 666;
 
@@ -163,23 +165,49 @@ test('thread mode: a message in a session thread reaches that session only', asy
   assert.equal(state.sessions.s1.queue.length, 0);
 });
 
-test('single-chat mode: reply routing, then the picker, then ambiguity asks', async () => {
+test('single-chat mode: ambiguity asks, the picker selects, reply routing wins', async () => {
   const { tg, bridge, state } = make();
   await reg(bridge, 's1', 'fix loader');
   await reg(bridge, 's2', 'eval report');
-  const { messageIds } = await bridge.sendText('s2', 'Report ready');
-  await bridge.handleUpdate(dm(OWNER, 'thanks', { reply_to_message: { message_id: messageIds[0], text: 'Report ready' } }));
-  assert.equal(state.sessions.s2.queue.length, 1);
-  assert.equal(state.sessions.s2.queue[0].replyTo, 'Report ready');
-
   tg.reset();
   await bridge.handleUpdate(dm(OWNER, 'which one am I talking to'));
-  assert.equal(state.sessions.s1.queue.length, 0, 'ambiguous text is not guessed');
+  assert.equal(state.sessions.s1.queue.length + state.sessions.s2.queue.length, 0, 'ambiguous text is not guessed');
   assert.ok(tg.sent()[0].params.reply_markup, 'a picker is offered instead');
 
   await bridge.handleUpdate({ update_id: updateId++, callback_query: { id: 'c', from: { id: OWNER, is_bot: false }, message: { chat: { id: OWNER, type: 'private' } }, data: 'use:s1' } });
   await bridge.handleUpdate(dm(OWNER, 'now this goes to s1'));
   assert.equal(state.sessions.s1.queue.length, 1);
+
+  const { messageIds } = await bridge.sendText('s2', 'Report ready');
+  await bridge.sendText('s1', 'later message from s1');
+  await bridge.handleUpdate(dm(OWNER, 'thanks', { reply_to_message: { message_id: messageIds[0], text: 'Report ready' } }));
+  assert.equal(state.sessions.s2.queue.length, 1, 'an explicit reply beats the last speaker');
+  assert.equal(state.sessions.s2.queue[0].replyTo, 'Report ready');
+});
+
+test('single-chat mode: a plain message goes to the session that spoke last', async () => {
+  const { bridge, state } = make();
+  await reg(bridge, 's1', 'fix loader');
+  await reg(bridge, 's2', 'eval report');
+  await reg(bridge, 's3', 'blog posts');
+  await bridge.handleUpdate({ update_id: updateId++, callback_query: { id: 'c', from: { id: OWNER, is_bot: false }, message: { chat: { id: OWNER, type: 'private' } }, data: 'use:s1' } });
+
+  await bridge.sendText('s2', 'done with the report');
+  await bridge.handleUpdate(dm(OWNER, 'great, ship it'));
+  assert.equal(state.sessions.s2.queue.length, 1, 'follows the last speaker, not the older pick');
+  assert.equal(state.sessions.s1.queue.length, 0);
+
+  await bridge.sendFile('s3', __filename, { caption: 'draft' });
+  await bridge.handleUpdate(dm(OWNER, 'looks good'));
+  assert.equal(state.sessions.s3.queue.length, 1, 'files count as speaking too');
+
+  await reg(bridge, 's4', 'new one');
+  await bridge.handleUpdate(dm(OWNER, 'still for s3'));
+  assert.equal(state.sessions.s3.queue.length, 2, 'a connect notice is not a reply');
+
+  await bridge.end('s3', 'test');
+  await bridge.handleUpdate(dm(OWNER, 'who now'));
+  assert.equal(state.sessions.s2.queue.length + state.sessions.s4.queue.length, 1, 'the last speaker leaving does not silently pick another');
 });
 
 test('messages queue while the session is busy and survive until acked', async () => {
