@@ -111,7 +111,7 @@ class Chrome {
 }
 
 // Runs inside the page after its own scripts have finished. Telegram's in-app HTML viewer on iOS does not
-// execute JavaScript (verified on the owner's phone), so a JS-drawn report is blank there. This freezes
+// execute JavaScript (verified on an iPhone), so a JS-drawn report is blank there. This freezes
 // what the scripts produced into plain HTML: canvases become images, scripts and inline handlers go.
 const FREEZE_PAGE = `(() => {
   for (const canvas of document.querySelectorAll('canvas')) {

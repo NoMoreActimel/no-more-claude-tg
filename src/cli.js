@@ -1,11 +1,14 @@
 import { execFileSync, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { CONFIG_FILE, DAEMON_ENTRY, HOME_DIR, LOG_FILE, OUTBOX_DIR, REPO_DIR, SERVICE_LABEL, SERVICE_PLIST, SOCKET_PATH, TOOL_PATH } from './paths.js';
+import { CONFIG_FILE, DAEMON_ENTRY, HOME_DIR, OUTBOX_DIR, REPO_DIR, SERVICE_LABEL, SERVICE_PLIST, TOOL_PATH } from './paths.js';
+import { api, daemonUp, ensureDaemon, logTail, waitUp } from './client.js';
 import { safeFileName, validateName } from './format.js';
+import { hookNotify, hookPermission, readStdinJson } from './hooks.js';
+import { BIN_LINK, SETTINGS_FILE, SKILL_DIR, askLine, confirm, doctor, folderTrusted, hooksInstalled, installHooks, installLocalVoice, installSkill, linkCli, saveConfig, trustFolder, uninstallHooks, validateToken } from './setup.js';
+import { voiceSupport } from './voice.js';
 import { findLocalRefs, screenshot } from './report.js';
 import { DEFAULT_CONFIG, ensurePrivateDir, readJson, writeJsonAtomic } from './store.js';
 
@@ -28,83 +31,14 @@ function parseArgs(argv) {
     if (a.startsWith('--')) {
       const [k, inline] = a.slice(2).split(/=(.*)/s);
       const next = argv[i + 1];
-      if (inline !== undefined) flags[k] = inline;
-      else if (next !== undefined && !next.startsWith('--')) flags[k] = argv[++i];
-      else flags[k] = true;
+      let v = true;
+      if (inline !== undefined) v = inline;
+      else if (next !== undefined && !next.startsWith('--')) v = argv[++i];
+      if (k in flags) flags[k] = [].concat(flags[k], v);
+      else flags[k] = v;
     } else rest.push(a);
   }
   return { flags, rest };
-}
-
-function api(method, route, body, { timeoutMs = 30000 } = {}) {
-  return new Promise((resolve, reject) => {
-    const payload = body ? JSON.stringify(body) : null;
-    const headers = payload ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } : {};
-    const req = http.request({ socketPath: SOCKET_PATH, path: route, method, headers }, (res) => {
-      let data = '';
-      res.setEncoding('utf8');
-      res.on('data', (c) => (data += c));
-      res.on('end', () => {
-        let json;
-        try {
-          json = JSON.parse(data || '{}');
-        } catch {
-          return reject(new Error('unreadable reply from the daemon'));
-        }
-        if (res.statusCode >= 400) reject(Object.assign(new Error(json.error || `daemon error ${res.statusCode}`), { fromDaemon: true }));
-        else resolve(json);
-      });
-    });
-    if (timeoutMs) req.setTimeout(timeoutMs, () => req.destroy(new Error('daemon did not answer in time')));
-    req.on('error', reject);
-    if (payload) req.write(payload);
-    req.end();
-  });
-}
-
-async function daemonUp() {
-  try {
-    await api('GET', '/status', null, { timeoutMs: 1500 });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function spawnDaemon() {
-  ensurePrivateDir(HOME_DIR);
-  const child = spawn(process.execPath, [DAEMON_ENTRY], { detached: true, stdio: 'ignore', cwd: os.homedir(), env: { ...process.env, PATH: `${TOOL_PATH}:${process.env.PATH || ''}` } });
-  child.unref();
-}
-
-async function waitUp(ms) {
-  for (let waited = 0; waited < ms; waited += 250) {
-    if (await daemonUp()) return true;
-    await sleep(250);
-  }
-  return false;
-}
-
-function logTail(n = 6) {
-  try {
-    return fs.readFileSync(LOG_FILE, 'utf8').trim().split('\n').slice(-n).join('\n');
-  } catch {
-    return '(no log yet)';
-  }
-}
-
-/** @returns true when it had to start the daemon */
-async function ensureDaemon() {
-  if (await daemonUp()) return false;
-  if (fs.existsSync(SERVICE_PLIST)) {
-    try {
-      execFileSync('launchctl', ['kickstart', `gui/${process.getuid()}/${SERVICE_LABEL}`], { stdio: 'ignore' });
-    } catch {}
-    if (await waitUp(3000)) return true;
-  }
-  spawnDaemon();
-  if (await waitUp(8000)) return true;
-  throw new Error(`the bridge daemon did not start. Last log lines:\n${logTail()}`);
 }
 
 function sessionId(flags) {
@@ -182,6 +116,18 @@ async function printPairing(reset) {
   out(`Valid 10 minutes${p.expectedUsername ? `, only from @${p.expectedUsername}` : ''}. The account that sends it becomes the only one the bot will ever talk to.`);
 }
 
+async function setupVoice(flags) {
+  if (flags.openai) {
+    const key = flags['key-stdin'] ? (await readStdin()).trim() : await askLine('OpenAI API key (nothing is echoed): ', { hidden: true });
+    if (!/^sk-/.test(key)) throw new UsageError('that does not look like an OpenAI API key');
+    saveConfig({ voice: { provider: 'openai', apiKey: key, model: flags.model ? String(flags.model) : undefined } });
+    return out('voice: OpenAI transcription (about $0.003 per minute of audio). Takes effect on the next voice note.');
+  }
+  installLocalVoice(out);
+  saveConfig({ voice: { provider: 'local' } });
+  out('voice: local Whisper ready');
+}
+
 const commands = {
   async up() {
     const started = await ensureDaemon();
@@ -228,8 +174,18 @@ const commands = {
     const name = validateName(flags.name);
     await ensureDaemon();
 
-    const trusted = readJson(path.join(os.homedir(), '.claude.json'), {}).projects?.[dir]?.hasTrustDialogAccepted;
-    if (!trusted) out(`warning: ${dir} was never opened in Claude Code — its first-run trust prompt needs someone at the laptop.`);
+    if (!folderTrusted(dir) && !flags['dry-run']) {
+      // Claude Code would stop at its "Do you trust the files in this folder?" dialog, which nobody can answer
+      // from a phone. Ask the owner on Telegram instead; only their tap launches.
+      const r = await api('POST', '/ask', { sessionId: sessionId(flags), text: `📁 \`${dir}\` was never opened in Claude Code. Trust the files in it and start a session there?`, options: ['Trust and launch', 'Cancel'], allowText: false, timeoutMs: 10 * 60 * 1000 }, { timeoutMs: 0 });
+      if (r.choice !== 'Trust and launch') {
+        out(r.timeout ? 'no answer from the user within 10 minutes; not launched' : 'the user did not approve trusting that folder; not launched');
+        process.exitCode = 3;
+        return;
+      }
+      trustFolder(dir);
+      out(`trusted ${dir} (recorded in Claude Code's own project list)`);
+    }
 
     const launchDir = path.join(HOME_DIR, 'launch');
     ensurePrivateDir(launchDir);
@@ -382,12 +338,36 @@ const commands = {
     }
   },
 
+  // A quick multiple-choice (or free-text) question to the user on their phone. Exit 0 and the answer on
+  // stdout; 3 when nobody answered in time; 4 when the session was disconnected meanwhile.
+  async ask({ flags, rest }) {
+    const text = rest.join(' ').trim();
+    if (!text) throw new UsageError('usage: tg ask "question" [--option A --option B …] [--timeout <sec>] [--no-text]');
+    const options = [].concat(flags.option ?? []).filter((o) => typeof o === 'string');
+    await ensureDaemon();
+    const r = await api('POST', '/ask', { sessionId: sessionId(flags), text, options, timeoutMs: (Number(flags.timeout) || 570) * 1000, allowText: !flags['no-text'], kind: 'question' }, { timeoutMs: 0 });
+    if (r.timeout) {
+      out('no answer in time — the user has not seen it yet');
+      process.exitCode = 3;
+    } else if (r.ended || r.restart) {
+      out('the session was disconnected before an answer came');
+      process.exitCode = 4;
+    } else out(r.text ?? r.choice);
+  },
+
+  // Claude Code hooks (installed into settings.json by `tg setup`). They print nothing unless this
+  // session is connected to Telegram, so unconnected sessions keep their normal local dialogs.
+  async 'hook-permission'() {
+    await hookPermission(await readStdinJson(), out);
+  },
+
+  async 'hook-notify'() {
+    await hookNotify(await readStdinJson());
+  },
+
   // Stop hook: a connected session must not go idle without a listener, or it becomes unreachable.
   async 'hook-stop'() {
-    let input = {};
-    try {
-      input = JSON.parse((await readStdin()) || '{}');
-    } catch {}
+    const input = await readStdinJson();
     if (input.stop_hook_active) return;
     const sid = input.session_id || process.env.CLAUDE_CODE_SESSION_ID;
     if (!sid) return;
@@ -423,7 +403,7 @@ const commands = {
     out('token saved (owner pairing kept). Restart the bridge: tg stop && tg up');
   },
 
-  async service({ rest }) {
+  async service({ rest, quiet = false }) {
     const uid = process.getuid();
     if (rest[0] === 'install') {
       const plist = `<?xml version="1.0" encoding="UTF-8"?>
@@ -447,7 +427,9 @@ const commands = {
         execFileSync('launchctl', ['bootout', `gui/${uid}/${SERVICE_LABEL}`], { stdio: 'ignore' });
       } catch {}
       execFileSync('launchctl', ['bootstrap', `gui/${uid}`, SERVICE_PLIST], { stdio: 'inherit' });
-      out((await waitUp(8000)) ? 'service installed: the bridge now starts at login and restarts if it crashes' : `service installed but the daemon is not answering. Log:\n${logTail()}`);
+      const up = await waitUp(8000);
+      if (!up) throw new Error(`service installed but the daemon is not answering. Log:\n${logTail()}`);
+      if (!quiet) out('service installed: the bridge now starts at login and restarts if it crashes');
     } else if (rest[0] === 'uninstall') {
       try {
         execFileSync('launchctl', ['bootout', `gui/${uid}/${SERVICE_LABEL}`], { stdio: 'ignore' });
@@ -457,19 +439,115 @@ const commands = {
     } else throw new UsageError('usage: tg service install|uninstall');
   },
 
-  async install({ rest }) {
-    const bin = path.join(os.homedir(), '.local', 'bin', 'tg');
-    fs.mkdirSync(path.dirname(bin), { recursive: true });
-    fs.rmSync(bin, { force: true });
-    fs.symlinkSync(path.join(REPO_DIR, 'bin', 'tg'), bin);
-    out(`linked ${bin}`);
-    const configDirs = rest.length ? rest.map((d) => path.resolve(d)) : [process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')];
-    for (const dir of configDirs) {
-      const dest = path.join(dir, 'skills', 'tg');
-      fs.mkdirSync(dest, { recursive: true });
-      fs.copyFileSync(path.join(REPO_DIR, 'skill', 'tg', 'SKILL.md'), path.join(dest, 'SKILL.md'));
-      out(`installed skill /tg into ${dest}`);
+  async install({ flags }) {
+    if (flags['no-link']) out('not linking the CLI (--no-link)');
+    else {
+      try {
+        const { link, onPath } = linkCli(undefined, { force: Boolean(flags.force) });
+        out(`linked ${link}${onPath ? '' : `  (add ${path.dirname(link)} to your PATH)`}`);
+      } catch (e) {
+        out(`not linked: ${e.message}`);
+      }
     }
+    out(`installed the /tg skill into ${installSkill()}`);
+    const { added, rewritten } = installHooks();
+    const what = [added.length && `added ${added.join(', ')}`, rewritten.length && `rewrote ${rewritten.join(', ')} to this install`].filter(Boolean).join('; ');
+    out(what ? `hooks in ${SETTINGS_FILE}: ${what} (backup kept next to it)` : `hooks already present in ${SETTINGS_FILE}`);
+  },
+
+  async uninstall({ flags }) {
+    const { removed } = uninstallHooks();
+    out(removed.length ? `removed hooks: ${removed.join(', ')}` : 'no hooks to remove');
+    fs.rmSync(SKILL_DIR, { recursive: true, force: true });
+    out(`removed ${SKILL_DIR}`);
+    if (fs.existsSync(SERVICE_PLIST)) await commands.service({ rest: ['uninstall'] });
+    else if (await daemonUp()) await api('POST', '/stop', {}).catch(() => {});
+    if (!flags['keep-link']) {
+      try {
+        if (fs.readlinkSync(BIN_LINK) === path.join(REPO_DIR, 'bin', 'tg')) fs.rmSync(BIN_LINK, { force: true });
+      } catch {}
+    }
+    if (flags.purge) {
+      fs.rmSync(HOME_DIR, { recursive: true, force: true });
+      out(`deleted ${HOME_DIR} (token, pairing, inbox, the 1.6 GB speech model)`);
+    } else out(`kept ${HOME_DIR} (token and pairing); add --purge to delete it`);
+  },
+
+  // First-run wizard. Every step is skippable with a flag so it can run unattended (and in tests).
+  async setup({ flags, rest }) {
+    if (rest[0] === 'voice') return setupVoice(flags);
+    const major = Number(process.versions.node.split('.')[0]);
+    if (major < 22) throw new Error(`Node ${process.versions.node} is too old; this needs Node 22 or newer`);
+
+    let config = readJson(CONFIG_FILE, null);
+    const apiBase = flags['api-base'] ? String(flags['api-base']) : config?.apiBase;
+    if (!config?.token || flags['new-token']) {
+      out('1/5  Bot token. In Telegram, open @BotFather, send /newbot, follow the prompts, copy the token.');
+      const token = flags['token-stdin'] ? (await readStdin()).trim() : await askLine('     Paste the token (nothing is echoed): ', { hidden: true });
+      const me = await validateToken(token, apiBase);
+      out(`     ✓ @${me.username}`);
+      const username = flags.username !== undefined ? String(flags.username) : process.stdin.isTTY ? await askLine('     Your own Telegram @username, as an extra check during pairing (Enter to skip): ') : '';
+      config = saveConfig({ token, apiBase, expectedUsername: username.replace(/^@/, '') || null, ownerId: config?.ownerId ?? null });
+      out(`     saved to ${CONFIG_FILE} (only you can read it)`);
+    } else out(`1/5  bot token already configured (${CONFIG_FILE}); use --new-token to replace it`);
+
+    out('2/5  Install');
+    if (!flags['no-link']) {
+      try {
+        const { link, onPath } = linkCli(undefined, { force: Boolean(flags.force) });
+        out(`     ${link}${onPath ? '' : `  — add ${path.dirname(link)} to your PATH`}`);
+      } catch (e) {
+        out(`     ${e.message}`);
+      }
+    }
+    if (!flags['no-skill']) out(`     /tg skill → ${installSkill()}`);
+    if (!flags['no-hooks']) {
+      const { added, rewritten } = installHooks();
+      const what = [added.length && `added ${added.join(', ')}`, rewritten.length && `rewrote ${rewritten.join(', ')}`].filter(Boolean).join('; ');
+      out(`     hooks in ${SETTINGS_FILE}: ${what || 'already there'}`);
+    }
+
+    out('3/5  Bridge daemon');
+    if (!flags['no-service'] && process.platform === 'darwin') await commands.service({ rest: ['install'], quiet: true });
+    else await ensureDaemon();
+    out(`     running${process.platform === 'darwin' && !flags['no-service'] ? ', starts at login' : ''}`);
+
+    out('4/5  Voice messages');
+    if (flags['no-voice']) out('     skipped');
+    else if (voiceSupport(config).ready) out('     already set up');
+    else if (flags.voice || (process.stdin.isTTY && (await confirm('     Transcribe voice notes locally with Whisper? Free, needs Homebrew and a 1.6 GB download.', { fallback: true })))) {
+      try {
+        installLocalVoice(out);
+        out('     ✓ voice ready');
+      } catch (e) {
+        out(`     ${e.message}`);
+      }
+    } else out(process.stdin.isTTY ? '     skipped (later: tg setup voice)' : '     skipped — not a terminal; run `tg setup voice` or pass --voice');
+
+    out('5/5  Pairing');
+    const st = await api('GET', '/status');
+    if (st.paired) out('     already paired');
+    else {
+      const p = await api('POST', '/pair', {});
+      out(`     Open this on your phone and press START:  ${p.link || `(send the code to the bot)`}`);
+      out(`     or send the bot this code:  ${p.code}     (valid 10 minutes${p.expectedUsername ? `, only from @${p.expectedUsername}` : ''})`);
+      if (!flags['no-wait']) {
+        for (let waited = 0; waited < 10 * 60 * 1000; waited += 2000) {
+          await sleep(2000);
+          if ((await api('GET', '/status')).paired) break;
+        }
+        out((await api('GET', '/status')).paired ? '     ✓ paired' : '     not paired yet — run `tg pair` for a fresh code when you are ready');
+      }
+    }
+    out('');
+    out('Done. In any Claude Code session type  /tg  before you walk away. `tg doctor` checks everything.');
+  },
+
+  async doctor() {
+    const daemonStatus = (await daemonUp()) ? await api('GET', '/status') : null;
+    const { lines, healthy } = await doctor({ daemonStatus });
+    out(lines.join('\n'));
+    if (!healthy) process.exitCode = 1;
   },
 
   async help() {
@@ -479,15 +557,18 @@ const commands = {
   tg register --name "fix loader" --emoji 🐛 --project-emoji 🧬
   tg listen                     wait for the next Telegram message (run in background)
   tg send "text"                message the user (signed with this session's name)
+  tg ask "question" --option A --option B    ask the user on their phone, print the answer
   tg send-file <path> [--caption …] [--as-file]
-  tg report <file.html> [--caption …] [--link] [--force]
+  tg report <file.html> [--caption …] [--with-original] [--force]
   tg bye                        disconnect this session
   tg project-emoji [🔥] [--project <dir>]   pin a project's emoji (no emoji: list them)
   tg spawn --project <dir> --name "blogposts" [--task "…"]   start a NEW claude session in Terminal, connected
   tg status | logs | stop
   tg pair [--reset]             (re)pair the bot with a Telegram account
   tg service install|uninstall  run the bridge at login via launchd
-  tg install [claude-config-dir …]   link the CLI and install the /tg skill
+  tg setup                      first run: token, install, daemon, voice, pairing  (tg setup voice [--openai])
+  tg doctor                     check every part and say how to fix what is off
+  tg install | uninstall [--purge]   link the CLI, install the /tg skill and hooks / remove them
   pbpaste | tg set-token        replace the bot token`);
   },
 };

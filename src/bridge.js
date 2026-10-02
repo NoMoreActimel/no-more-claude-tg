@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { Pairing, isFromOwner } from './auth.js';
 import { chunkText, escapeHtml, renderBody, safeFileName, signature, validateEmoji, validateName } from './format.js';
@@ -8,6 +9,18 @@ const TOPIC_CHECK_TTL_MS = 60 * 1000;
 const STALE_QUEUE_MS = 2 * 60 * 1000;
 const MSG_MAP_LIMIT = 600;
 const CAPTION_LIMIT = 1000;
+const ASK_DEFAULT_MS = 9 * 60 * 1000 + 30 * 1000; // under Claude Code's 10-minute hook timeout
+const ASK_MAX_MS = 60 * 60 * 1000;
+const ASK_MAX_OPTIONS = 12;
+const ASK_TEXT_LIMIT = 2500; // Telegram messages cap at 4096 chars after HTML escaping
+const NOTIFY_QUIET_MS = 10 * 60 * 1000;
+const NOTIFY_LABELS = {
+  permission_prompt: 'a permission prompt it could not relay',
+  idle_prompt: 'your next instruction',
+  elicitation_dialog: 'a form from an MCP server',
+  elicitation_url_dialog: 'a login in the browser',
+  agent_needs_input: 'input for a subagent',
+};
 
 const HELP = [
   '<b>Claude Code bridge</b>',
@@ -45,6 +58,8 @@ export class Bridge {
     this.listeners = new Map();
     this.typing = new Map();
     this.leftAt = new Map();
+    this.asks = new Map(); // askId -> pending question for the owner
+    this.notified = new Map(); // `${sessionId}:${type}` -> last alert time
     this.topics = false;
     this.topicsCheckedAt = 0;
     this.botUsername = null;
@@ -244,6 +259,10 @@ export class Bridge {
     if (this.state.activeSessionId === sessionId) this.state.activeSessionId = null;
     this.saveState();
     this.stopTyping(sessionId);
+    for (const a of [...this.asks.values()].filter((x) => x.sessionId === sessionId)) {
+      a.resolve({ ended: true });
+      this.closeAsk(a, '🚫 session disconnected — not delivered').catch(() => {});
+    }
     const l = this.listeners.get(sessionId);
     if (l) {
       this.listeners.delete(sessionId);
@@ -373,8 +392,128 @@ export class Bridge {
         listening: this.listeners.has(s.id),
         queued: s.queue.length,
         thread: Boolean(s.threadId),
+        asking: [...this.asks.values()].filter((a) => a.sessionId === s.id).length,
       })),
     };
+  }
+
+  // ---------------------------------------------------------------- questions for the owner
+
+  /**
+   * Ask the owner something with buttons, in the session's chat. Resolves with {choice, index} on a tap,
+   * {text} on a typed reply to the question, {timeout: true} otherwise. Both answer paths sit behind
+   * isFromOwner(), so nobody but the paired owner can answer — this is what permission relays rely on.
+   */
+  ask(sessionId, { text, options = [], timeoutMs = ASK_DEFAULT_MS, kind = 'question', allowText = true } = {}) {
+    this.requirePaired();
+    const s = this.requireLive(sessionId);
+    const labels = options.map((o) => String(typeof o === 'string' ? o : o?.label ?? '').trim()).filter(Boolean).slice(0, ASK_MAX_OPTIONS);
+    if (!String(text || '').trim()) throw new Error('question text is required');
+    if (!labels.length && !allowText) throw new Error('a question needs options or a typed answer');
+    const id = crypto.randomBytes(4).toString('hex');
+    const perRow = labels.every((l) => l.length <= 14) ? 2 : 1;
+    const inline_keyboard = [];
+    labels.forEach((label, i) => {
+      if (i % perRow === 0) inline_keyboard.push([]);
+      inline_keyboard[inline_keyboard.length - 1].push({ text: label.slice(0, 60), callback_data: `q:${id}:${i}` });
+    });
+    const hint = allowText ? `\n<i>${labels.length ? 'Tap a button, or reply' : 'Reply'} to this message to answer.</i>` : '';
+    const plain = String(text).slice(0, ASK_TEXT_LIMIT);
+    const html = `<b>${escapeHtml(signature(s))}</b>\n${renderBody(plain)}${hint}`;
+    // Pending from this moment, so a Notification-hook alert arriving while the question is being sent
+    // already sees it as relayed. The timer starts now too, so no answer path can outlive the entry.
+    const entry = { id, sessionId: s.id, messageId: null, html, labels, kind, allowText, at: this.now() };
+    const answered = new Promise((resolve) => {
+      entry.resolve = (result) => {
+        if (!this.asks.has(id)) return;
+        clearTimeout(entry.timer);
+        this.asks.delete(id);
+        resolve(result);
+      };
+    });
+    this.asks.set(id, entry);
+    entry.timer = setTimeout(() => {
+      entry.resolve({ timeout: true });
+      this.closeAsk(entry, '⌛ no answer here — it is waiting at the laptop now').catch(() => {});
+    }, Math.min(Math.max(Number(timeoutMs) || ASK_DEFAULT_MS, 5000), ASK_MAX_MS));
+    entry.timer.unref?.();
+    const promise = (async () => {
+      try {
+        const m = await this.inThread(s, async (threadId) => {
+          try {
+            return await this.say(threadId, html, inline_keyboard.length ? { reply_markup: { inline_keyboard } } : {});
+          } catch (e) {
+            if (e.code !== 400 || !/parse|entit/i.test(e.message)) throw e;
+            const params = { chat_id: this.config.ownerId, text: `${signature(s)}\n${plain}`, link_preview_options: { is_disabled: true } };
+            if (threadId) params.message_thread_id = threadId;
+            if (inline_keyboard.length) params.reply_markup = { inline_keyboard };
+            return this.tg.call('sendMessage', params);
+          }
+        });
+        entry.messageId = m.message_id;
+        this.remember(m.message_id, s.id);
+        this.spoke(s.id);
+        this.saveState();
+      } catch (e) {
+        entry.resolve({ failed: true });
+        throw e;
+      }
+      return answered;
+    })();
+    // The asker (a CLI process, a hook) can die while the question is open; then an answer would vanish
+    // into nothing while the phone shows it as taken. Cancel closes the question visibly instead.
+    const cancel = () => {
+      if (!this.asks.has(id)) return;
+      entry.resolve({ cancelled: true });
+      this.closeAsk(entry, '🚫 the session stopped waiting — not delivered').catch(() => {});
+    };
+    return { promise, cancel };
+  }
+
+  /** Strip the buttons and append the outcome, so the chat shows what was decided. */
+  async closeAsk(entry, note) {
+    if (!entry.messageId) return;
+    try {
+      await this.tg.call('editMessageText', { chat_id: this.config.ownerId, message_id: entry.messageId, text: `${entry.html}\n${escapeHtml(note)}`, parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
+    } catch (e) {
+      if (!/not modified/i.test(e.message)) this.log(`closeAsk failed: ${e.message}`);
+    }
+  }
+
+  async answerAskByReply(msg, text) {
+    const repliedTo = msg.reply_to_message?.message_id;
+    if (!repliedTo || !text) return false;
+    const entry = [...this.asks.values()].find((a) => a.messageId === repliedTo);
+    if (!entry) return false;
+    if (!entry.allowText) {
+      await this.reply(msg, 'Tap one of the buttons to answer that one.');
+      return true;
+    }
+    entry.resolve({ text, typed: true });
+    await this.closeAsk(entry, `→ ${text.slice(0, 200)}`);
+    await this.react(msg.message_id, '👀');
+    return true;
+  }
+
+  /**
+   * "Claude is waiting at the laptop" alert from the Notification hook. Deduplicated per session and type,
+   * and silent when the bridge is already handling it (a relayed prompt) or the session is simply idle
+   * with its listener armed (that is normal for a connected session).
+   */
+  async notify(sessionId, type, detail = '') {
+    const s = this.live(sessionId);
+    if (!s) return { sent: false, reason: 'not registered' };
+    const pending = [...this.asks.values()].some((a) => a.sessionId === sessionId);
+    if (type === 'permission_prompt' && pending) return { sent: false, reason: 'relayed' };
+    if (type === 'idle_prompt' && (this.listeners.has(sessionId) || pending)) return { sent: false, reason: 'listening' };
+    const key = `${sessionId}:${type}`;
+    if (this.notified.has(key) && this.now() - this.notified.get(key) < NOTIFY_QUIET_MS) return { sent: false, reason: 'quiet' };
+    this.notified.set(key, this.now());
+    const what = NOTIFY_LABELS[type] || escapeHtml(String(type || 'input').replace(/_/g, ' '));
+    const extra = detail ? `\n<i>${escapeHtml(String(detail).slice(0, 300))}</i>` : '';
+    await this.inThread(s, (threadId) => this.say(threadId, `⏸ <b>${escapeHtml(signature(s))}</b> is waiting at the laptop for ${what}.${extra}`)).then((m) => this.remember(m.message_id, s.id));
+    this.saveState();
+    return { sent: true };
   }
 
   // ---------------------------------------------------------------- housekeeping
@@ -421,6 +560,10 @@ export class Bridge {
 
   shutdown() {
     for (const id of [...this.typing.keys()]) this.stopTyping(id);
+    for (const a of [...this.asks.values()]) {
+      a.resolve({ restart: true });
+      this.closeAsk(a, '🚫 bridge restarted — ask again').catch(() => {});
+    }
     for (const [id, l] of this.listeners) {
       clearTimeout(l.timer);
       l.resolve({ restart: true });
@@ -498,6 +641,7 @@ export class Bridge {
 
   async handleOwnerMessage(msg) {
     const text = (msg.text ?? msg.caption ?? '').trim();
+    if (await this.answerAskByReply(msg, text)) return;
     const session = this.resolveSession(msg);
 
     if (text.startsWith('/') && (await this.handleCommand(msg, text, session))) return;
@@ -629,14 +773,30 @@ export class Bridge {
   }
 
   async handleCallback(cq) {
-    const id = String(cq.data || '').startsWith('use:') ? cq.data.slice(4) : null;
-    const s = id && this.liveSessions().find((x) => x.id.startsWith(id));
-    if (s) {
-      this.state.activeSessionId = s.id;
-      this.saveState();
+    const data = String(cq.data || '');
+    let toast = 'Nothing to do';
+    if (data.startsWith('q:')) {
+      const [, id, idx] = data.split(':');
+      const entry = this.asks.get(id);
+      const choice = entry?.labels[Number(idx)];
+      if (entry && choice !== undefined) {
+        entry.resolve({ choice, index: Number(idx) });
+        await this.closeAsk(entry, `→ ${choice}`);
+        toast = choice;
+      } else {
+        toast = 'That question has expired';
+      }
+    } else if (data.startsWith('use:')) {
+      const id = data.slice(4);
+      const s = this.liveSessions().find((x) => x.id.startsWith(id));
+      if (s) {
+        this.state.activeSessionId = s.id;
+        this.saveState();
+      }
+      toast = s ? `Now talking to ${signature(s)}` : 'That session is gone';
     }
     try {
-      await this.tg.call('answerCallbackQuery', { callback_query_id: cq.id, text: s ? `Now talking to ${signature(s)}` : 'That session is gone' });
+      await this.tg.call('answerCallbackQuery', { callback_query_id: cq.id, text: toast.slice(0, 200) });
     } catch (e) {
       this.log(`answerCallbackQuery failed: ${e.message}`);
     }

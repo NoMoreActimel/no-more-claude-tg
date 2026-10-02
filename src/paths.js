@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,7 +8,10 @@ export const HOME_DIR = process.env.CLAUDE_TG_HOME || path.join(os.homedir(), '.
 
 export const CONFIG_FILE = path.join(HOME_DIR, 'config.json');
 export const STATE_FILE = path.join(HOME_DIR, 'state.json');
-export const SOCKET_PATH = path.join(HOME_DIR, 'daemon.sock');
+// Unix socket paths are capped at ~104 bytes on macOS; a deep CLAUDE_TG_HOME would make connect() fail with
+// EINVAL, so such homes get a short socket under the temp dir, keyed by the home's hash.
+const longSocket = path.join(HOME_DIR, 'daemon.sock');
+export const SOCKET_PATH = Buffer.byteLength(longSocket) <= 96 ? longSocket : path.join(os.tmpdir(), `claude-tg-${crypto.createHash('sha1').update(HOME_DIR).digest('hex').slice(0, 12)}.sock`);
 export const LOG_FILE = path.join(HOME_DIR, 'daemon.log');
 export const INBOX_DIR = path.join(HOME_DIR, 'inbox');
 export const OUTBOX_DIR = path.join(HOME_DIR, 'outbox');

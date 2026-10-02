@@ -1,164 +1,217 @@
-# claude-tg
+# no-more-claude-tg
 
-Talk to your running Claude Code sessions from Telegram. One private bot, many sessions, only you.
+**Your own private Telegram bot for your running Claude Code sessions.** Walk away from the laptop and
+keep working with every session from your phone: text, voice notes, photos, files, reports, and the
+permission prompts that would otherwise leave a session stuck at the desk.
 
 ```
- phone ── Telegram ── bot ──(long poll, outbound only)── daemon ──(unix socket, 0600)── tg CLI ── Claude session
-                                                            │                                   ├─ Claude session
-                                                            └ caffeinate · whisper · reports    └─ Claude session
+ your phone ── Telegram ── your bot ──(outbound long-poll)── daemon on your Mac ──(unix socket)── Claude session
+                                                                │                                  ├─ Claude session
+                                                                └─ whisper · caffeinate · reports   └─ Claude session
 ```
 
-- One **daemon** owns the bot (Telegram allows a single poller per token). Every Claude session on this
-  Mac — whichever subscription account it is logged into — reaches it through a unix socket.
-- A session joins by running the **`/tg` skill**: it registers under `<project emoji><task emoji> short name`,
-  arms a background listener, and from then on reads and answers your Telegram messages.
-- With **Threaded Mode** on, each session gets its own thread in the bot chat. Without it, everything
-  shares one chat and you route by replying to a session's message (or `/sessions` → tap).
-- Zero npm dependencies. Node ≥ 22.
+- **One bot, all your sessions.** Each session that runs `/tg` shows up as `🧬🐛 fix loader`: a project
+  emoji, a task emoji, a short name. Write to any of them; replies come back signed.
+- **Only you.** The bot pairs with exactly one Telegram account and silently ignores everyone else.
+  Nothing listens on the network; the daemon only makes outbound calls to Telegram.
+- **Prompts on your phone.** A permission prompt in a connected session arrives as Allow / Deny buttons.
+  Claude's own questions arrive as option buttons.
+- **Reports that open on a phone.** `tg report x.html` sends a screenshot and a pre-rendered copy.
+- Zero npm dependencies. macOS first (Linux works without sleep control, autostart and `tg spawn`).
+
+## Setup (two minutes)
+
+You need: a Mac with [Node 22+](https://nodejs.org) and [Claude Code](https://docs.anthropic.com/en/docs/claude-code), a
+Telegram account, and your own bot token.
+
+1. **Create your bot.** In Telegram open [@BotFather](https://t.me/BotFather), send `/newbot`, pick a name and a
+   username ending in `bot`. Copy the token it gives you (looks like `123456789:AAF…`). That token is the
+   bot's password; never paste it into a chat.
+2. **Install and run the wizard:**
+   ```sh
+   npm install -g no-more-claude-tg      # or: git clone … && cd no-more-claude-tg && ./bin/tg setup
+   tg setup
+   ```
+   It asks for the token (typed invisibly), checks it, saves it to `~/.config/claude-tg/config.json`
+   (readable only by you), links the `tg` command, installs the `/tg` skill and three hooks into
+   `~/.claude/settings.json` (merged, backup kept), starts the daemon at login, offers to set up voice
+   transcription, and prints a pairing link.
+3. **Pair.** Open the link on your phone and press START (or send the 10-character code to your bot).
+   The account that does this becomes the only one the bot will ever talk to.
+
+Recommended, in @BotFather afterwards: `/setjoingroups` → Disable (the bot has no business in groups),
+and enable **topics for private chats** in the bot's settings so every session gets its own thread. `tg
+status` shows `threads: on` once that took.
+
+`tg doctor` checks every part and tells you how to fix what is off.
 
 ## Daily use
 
-In any Claude Code terminal, before you walk away:
+In any Claude Code session, before you walk away:
 
 ```
-/tg            (optionally: /tg fix loader)
+/tg                 (or: /tg fix loader — words after /tg become the session name)
 ```
 
-Then in Telegram: write in the session's thread. Text, voice, photos, files. Claude replies there,
-short, signed with the session name.
+Then in Telegram write to that session. Replies arrive signed with its name. Several sessions
+connected? With topics enabled each has its own thread. Without, a plain message goes to the session that
+wrote last; reply to a message to talk to another one, or pick with `/sessions`.
 
 | In Telegram | |
 |---|---|
 | `/sessions` | who is connected — 🟢 idle & listening, 🟡 mid-task |
-| `/ping` | (in a thread) is this session alive, anything queued |
-| `/end` | (in a thread) disconnect that session |
-| `/clean` | delete the threads of ended sessions |
-| `/status` | bridge health, how many stranger updates were dropped |
+| `/ping` | is this session alive, anything queued |
+| `/end` | disconnect this session |
+| `/clean` | delete threads of ended sessions |
+| `/status` | bridge health |
 
-Reactions on your messages: ✍ queued (session is busy) → 👀 the session has it.
+Reactions on your messages: ✍ queued (the session is busy) → 👀 picked up.
 
-## One-time setup
+**Voice notes** are transcribed on your Mac (Whisper, free, any language) and echoed back so you can catch
+mishearings. **Photos and files** land in a private inbox and are handed to the session as paths.
 
-Already done on this machine: CLI linked to `~/.local/bin/tg`, skill in `~/.claude/skills/tg`, launchd
-service, Stop hook, ffmpeg + whisper.cpp + model. What only you can do:
+### Prompts that used to need the laptop
 
-1. **Pair** — `tg pair`, open the printed link on your phone, press START. Valid 10 minutes.
-2. **Thread per session** (recommended) — in @BotFather, open this bot's settings and enable topics /
-   threaded mode for private chats (the API flag is `has_topics_enabled`; `tg status` shows `threads: on`
-   once it took). New sessions pick it up within a minute, no restart.
-3. **Lock the bot down in BotFather** — `/setjoingroups` → Disable. (The daemon also leaves any group
-   it is added to.)
-4. **Rotate the token** — it was pasted into a chat once. @BotFather → `/revoke`, then
-   `pbpaste | tg set-token && tg stop && tg up`. Pairing survives a token change.
-
-From scratch on another Mac: `brew install ffmpeg whisper-cpp`, put `ggml-large-v3-turbo.bin` into
-`~/.config/claude-tg/models/`, `pbpaste | node src/cli.js set-token`, `node src/cli.js install`,
-`tg service install`, add the Stop hook (below), `tg pair`.
-
-## Security model
-
-The goal: nobody but the owner can make a Claude session do anything.
-
-- **Identity = numeric Telegram user id**, fixed at pairing. Not the @username (changeable,
-  re-registrable) and not the phone number (bots never see it).
-- **Pairing**: a 10-character code from `crypto.randomBytes`, shown only in the local terminal, valid
-  10 minutes, single use; 3 wrong guesses lock that account out, 12 in total burn the code. It must also
-  come from the expected @username (`expectedUsername` in config) — a second factor for that one moment.
-  Until pairing succeeds the bot answers nobody and no session can register.
-- **Every update** must pass `isFromOwner()`: owner id, not a bot, private chat whose id is the owner id.
-  Anything else is dropped without a reply — a stranger cannot tell the bot is alive. Groups are left.
-- **No inbound network surface.** The daemon only makes outbound HTTPS calls to Telegram. The control
-  API is a unix socket (mode 0600) inside `~/.config/claude-tg` (mode 0700): no TCP port, nothing for a
-  web page or another machine to reach.
-- **Token** lives in `~/.config/claude-tg/config.json` (0600), never in this repo, and is redacted
-  from every error and log line. Logs never contain message text.
-- **Telegram content never touches a shell**: ffmpeg/whisper run via `execFile` with argument arrays;
-  attachment names are sanitised and written only under the private inbox.
-- **Uploads** only come from the private outbox the CLI stages into; the daemon refuses any other path.
-- **Secret report links are off** (`tunnel.enabled: false`). If enabled: separate localhost listener,
-  exact-match 256-bit tokens, 24 h expiry, cloudflared runs only while a link is alive.
-
-`npm test` covers all of the above, including an end-to-end run of the real daemon + CLI against a fake
-Telegram API with an impostor in the loop. Disabling the owner check makes 5 tests fail.
-
-What this does **not** protect against: someone with your unlocked phone or Telegram account, or code
-already running as your macOS user. Turn on Telegram two-step verification and a passcode lock.
-
-## CLI
-
-```
-tg up                         start the bridge if needed; status; pairing link if unpaired
-tg register --name "fix loader" --emoji 🐛 --project-emoji 🧬
-tg listen                     block until a Telegram message arrives (run in background)
-tg send "text"                message the user (signed)
-tg send-file <path> [--caption …] [--as-file]
-tg report <file.html> [--caption …] [--link] [--force]
-tg bye                        disconnect this session
-tg project-emoji [🔥] [--project <dir>]   pin a project's emoji; no emoji lists them
-tg spawn --project <dir> --name "blogposts" [--task "…"] [--dry-run]
-                              open a NEW claude session in a Terminal window; it connects itself
-tg status | logs | stop
-tg pair [--reset]
-tg service install|uninstall  launchd agent (start at login, restart on crash)
-tg install [config-dir …]     link the CLI, install the /tg skill
-pbpaste | tg set-token
-```
-
-The session id comes from `CLAUDE_CODE_SESSION_ID`, so Claude never has to pass it around.
+- **Permission prompt** (a command, a file write, …) in a connected session → a message with
+  **✅ Allow / ❌ Deny**. The session waits up to ten minutes for your tap; after that the prompt is
+  shown in the terminal as usual. Taps from anyone but you are ignored.
+- **Questions from Claude** (the multiple-choice dialog, `AskUserQuestion`) → the options as buttons;
+  tap one or reply with free text. Claude continues with your answer. Connected sessions can also ask
+  directly with `tg ask`. (Claude Code has no hook for its question dialog; the bridge catches it through
+  the permission hook and hands the answer back as the tool's result — verified on 2.1.288.)
+- **Waiting alerts.** If a connected session is stuck on something only the laptop can answer, you get
+  one message saying so.
+- **Starting a session from the phone.** Ask any connected session "start a session in my-app called
+  blogposts" and it runs `tg spawn`, which opens a normal `claude` in a new Terminal window there. A
+  folder Claude Code has never opened first gets a "Trust the files in it?" button; nothing launches
+  without your tap. Nothing can start a session from a bare Telegram message — only a session you already
+  connected can, on your request.
 
 ### Reports
 
-`tg report x.html` refuses HTML that still loads local files (`src="plots/a.png"`, `fetch('data.json')`,
-`file://…`) — on a phone those are simply missing. Once the page is self-contained it renders it in
-headless Chrome (430 px wide, over a DevTools pipe) and sends:
+`tg report page.html` refuses HTML that still loads local files (`src="plots/a.png"`, `fetch('data.json')`),
+because on a phone those are missing. A self-contained page is rendered in headless Chrome at phone width
+and sent as a screenshot plus a **static snapshot**: scripts already run, canvases turned into images,
+scripts stripped. Telegram's in-app viewer on iOS does not run JavaScript, so that snapshot is what you
+can actually read; `--with-original` also sends the interactive file for later.
 
-1. a screenshot of the first screenful — the instant preview in the chat;
-2. a **static snapshot** of the rendered page under the original file name: scripts already executed,
-   canvases turned into images, scripts and inline handlers stripped.
+## Security model
 
-Why the snapshot: Telegram's in-app HTML viewer on iOS does **not run JavaScript** (tested on the owner's
-iPhone, 2026-09-21: a JS probe page stayed red). A JS-drawn report would be blank there; the frozen copy
-scrolls and zooms like a normal page. Interactivity is gone, so reports should not hide content behind
-tabs or hover. `--with-original` also sends the interactive file; if freezing fails, the full-page PNG
-and the original are sent instead.
+- **Identity is the numeric Telegram user id** captured at pairing — not the @username (changeable) and
+  not the phone number (bots never see it).
+- **Pairing** uses a 10-character code from `crypto.randomBytes`, shown only in your terminal, valid 10
+  minutes, single use; 3 wrong guesses lock an account out, 12 burn the code. Optionally the pairing
+  message must also come from a @username you named during setup. Until pairing succeeds the bot answers
+  nobody and no session can connect.
+- **Every update** must pass one gate: owner id, not a bot, private chat whose id is the owner id.
+  Anything else is dropped without a reply, so strangers cannot even tell the bot is alive. Added to a
+  group, the bot leaves.
+- **No inbound network surface.** Outbound HTTPS to Telegram only. Sessions and hooks reach the daemon
+  through a unix socket (mode 0600) in `~/.config/claude-tg` (mode 0700).
+- **Permission decisions** come only from taps on the buttons in that private chat; a typed reply to a
+  permission question is refused.
+- **The token** stays in `config.json` (0600), is redacted from every error and log line, and logs never
+  contain message text. Telegram content never touches a shell (`execFile` with argument arrays);
+  attachment names are sanitised; uploads come only from a private outbox the CLI stages into.
 
-### How a session stays reachable
+What this does not protect against: someone holding your unlocked phone or Telegram account, or code
+already running as your macOS user. Turn on Telegram's two-step verification and a passcode lock.
 
-`tg listen` runs as a Claude Code background command and exits when a message arrives; that exit wakes
-the session. Messages stay queued in the daemon until the listener acknowledges them, so a crash
-between receiving and printing loses nothing. The Stop hook (`tg hook-stop`) blocks a connected
-session from going idle without a listener:
+## Commands
 
-```json
-"hooks": { "Stop": [ { "hooks": [ { "type": "command", "command": "$HOME/.local/bin/tg hook-stop 2>/dev/null || true", "timeout": 5 } ] } ] }
+```
+tg setup                      first run: token, install, daemon, voice, pairing
+tg setup voice [--openai]     set up transcription later (local Whisper, or an OpenAI key)
+tg doctor                     check every part and how to fix what is off
+tg up / status / logs / stop  daemon control
+tg pair [--reset]             (re)pair with a Telegram account
+
+# inside a Claude Code session (the /tg skill does this for you)
+tg register --name "fix loader" --emoji 🐛 --project-emoji 🧬
+tg listen                     block until a message arrives (the skill runs it in the background)
+tg send "text"                message you, signed with the session name
+tg ask "question" --option A --option B     ask you with buttons; prints the answer
+tg send-file <path> [--caption …] [--as-file]
+tg report <file.html> [--caption …] [--with-original]
+tg spawn --project <dir> --name "blogposts" [--task "…"]
+tg project-emoji [🔥]         pin a project's emoji (no emoji: list them)
+tg bye                        disconnect this session
+
+tg install | uninstall [--purge]      link the CLI, install skill + hooks / remove them
+tg service install | uninstall        launchd (start at login, restart on crash)
+pbpaste | tg set-token                replace the bot token
 ```
 
-### Starting a session from the phone
+## How it works
 
-The daemon never starts processes — a Telegram message cannot launch anything by itself. But a session
-you already connected can, on request: ask it "start a session in chatdhd called blogposts" and it runs
-`tg spawn`, which opens an ordinary interactive `claude` in a new Terminal window (your normal settings,
-no extra flags) that reads the skill and connects itself (~30 s). The prompt is passed through a file, so
-nothing you type is interpreted by a shell. This needs at least one session already connected — leave
-one running before you go.
+A single daemon owns the bot (Telegram allows one poller per token). Every session on the machine talks
+to it over the unix socket, so it does not matter which Claude account a session is logged into.
 
-## Limits worth knowing
+`tg listen` runs as a background command inside the session and exits when a message arrives; that exit
+wakes the session, which reads the message as the command's output. Messages stay queued in the daemon
+until the listener acknowledges them, so nothing is lost if the session is mid-task or crashes between
+receiving and reading. Three hooks in `~/.claude/settings.json` keep a connected session reachable:
 
-- A **permission prompt** in the terminal cannot be answered from Telegram; the session tells you it is
-  waiting at the laptop. After 2 minutes unanswered the bridge also says so in the thread.
-- **Sleep**: the daemon holds `caffeinate -ims` while any session is connected. That does not survive a
-  closed lid on battery — leave the laptop open and plugged in.
-- **Voice**: ~5 s per note on this Mac; the first one after a reboot takes ~30 s (1.6 GB model load).
-- Telegram bots can download files up to 20 MB and upload up to 50 MB.
+| Hook | What it does |
+|---|---|
+| `Stop` | refuses to let a connected session go idle without a listener armed |
+| `PermissionRequest` | relays the prompt to Telegram and returns your Allow/Deny — or, for Claude's question dialog, the option you tapped (up to 10 min) |
+| `Notification` | sends one "waiting at the laptop" alert for prompts it cannot relay |
+
+Hooks print nothing for sessions that are not connected, so the rest of your Claude Code use is
+unchanged. `tg uninstall` removes exactly these three.
+
+While any session is connected the daemon holds `caffeinate -ims`, so the Mac does not idle-sleep. A
+closed lid on battery still sleeps it — leave it open and plugged in.
+
+## Voice
+
+`tg setup` offers local Whisper: `ffmpeg` + `whisper-cpp` from Homebrew and a one-time 1.6 GB model
+download (`ggml-large-v3-turbo`, multilingual). A voice note takes a few seconds on Apple Silicon, the
+first one after a reboot ~30 s. No audio leaves your machine.
+
+Prefer the cloud? `tg setup voice --openai` stores an OpenAI key and uses `gpt-4o-mini-transcribe`
+(about $0.003 per minute of audio — a voice note costs well under a cent).
+
+## Troubleshooting
+
+- `tg doctor` first. It checks Node, token, pairing, daemon, service, PATH, skill, hooks, voice, browser.
+- Daemon log: `tg logs` (`~/.config/claude-tg/daemon.log`; never contains message text).
+- "another process is polling this bot token (409)": two daemons (or another tool) use the same bot.
+  One bot = one daemon.
+- The session does not react to my message: `/ping` it. 🟡 means it is mid-task; your message is queued.
+  If `/ping` says the process is gone, the terminal was closed.
+- Voice note refused: `tg setup voice`.
+- Permission prompt shown in the terminal, not on the phone: the session is not connected (`/sessions`),
+  or hooks are missing (`tg doctor`).
+- Moved the repo? `tg doctor` shows the hooks pointing at the old path; `tg install` rewrites them.
+- You are back at the laptop and a session seems stuck: it is waiting for your tap on the phone (up to
+  10 minutes). Tap there, or send `/end` to that session in Telegram, and the prompt appears locally.
+- The question on the phone says "the session stopped waiting": the command that asked was interrupted
+  or hit a timeout before you answered. Ask the session again.
+
+## For AI agents
+
+If a user asks you to set this up for them: install with `npm install -g no-more-claude-tg`, then run
+`tg setup` *in a terminal they can see* — it needs their bot token typed in and their tap on the pairing
+link; do not ask them to paste the token into the chat. Afterwards, the `/tg` skill in
+`~/.claude/skills/tg/SKILL.md` tells any session how to connect and how to behave on a phone-sized
+screen: short messages, `tg ask` for decisions, `tg report` for anything visual.
 
 ## Files
 
 ```
 ~/.config/claude-tg/   config.json (token, owner id) · state.json · daemon.sock · daemon.log
-                       inbox/ (your attachments, 7 days) · outbox/ · models/
-src/bridge.js          all behaviour: auth gate, pairing, routing, queues, threads
-src/daemon.js          poll loop + unix-socket API          src/cli.js     the `tg` command
-src/auth.js            pairing + isFromOwner                src/report.js  lint + screenshots
-src/voice.js           ffmpeg + whisper.cpp                 src/tunnel.js  secret links (off)
-skill/tg/SKILL.md      what a Claude session is told to do
+                       inbox/ (your attachments, kept 7 days) · outbox/ · models/
+src/bridge.js          all behaviour: auth gate, pairing, routing, queues, threads, questions
+src/daemon.js          poll loop + unix-socket API         src/cli.js      the `tg` command
+src/hooks.js           PermissionRequest/Notification      src/setup.js    wizard, hooks merge, doctor
+src/auth.js            pairing + isFromOwner               src/report.js   lint + screenshots + snapshot
+src/voice.js           Whisper / OpenAI                    src/tunnel.js   expiring links (off by default)
+skill/tg/SKILL.md      what a connected session is told to do
 ```
+
+`npm test` runs the suite, including the real daemon and CLI against a fake Telegram API with an impostor
+in the loop and the hooks relaying prompts end to end.
+
+MIT © NoMoreActimel

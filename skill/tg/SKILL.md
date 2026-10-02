@@ -57,10 +57,17 @@ If several messages queued up while you were busy, they arrive together, numbere
 ## 3. When to write first
 
 - You finished the task, or reached a result they are waiting for.
-- You are blocked or need a decision → ask **one** clear question, with options if you can ("A: retry
-  with smaller batch, B: skip this file?").
-- Something needs approval at the laptop (a permission prompt cannot be answered from a phone). Prefer
-  a route that needs no prompt; if there is none, say that it is waiting at the laptop.
+- You need a decision → ask it with buttons, and wait for the answer:
+  `tg ask "Retry with a smaller batch, or skip this file?" --option "Retry smaller" --option "Skip"`
+  Run it with the Bash tool's `timeout` set to 600000 (10 minutes; the default 2 minutes would kill it
+  while they are still reading, and the question would then show as "stopped waiting"). It prints the
+  chosen option (or whatever they typed). Exit code 3 = no answer within ~10 min.
+  (AskUserQuestion also reaches the phone when the hooks are installed — the answer comes back as the
+  tool's error text, which is the user's choice; continue with it. `tg ask` is the plainer route.)
+- Permission prompts: when the bridge's hooks are installed (`tg doctor` shows them), a permission prompt
+  in this session is relayed to Telegram with Allow / Deny buttons and you simply wait for the outcome.
+  A denial from the phone means no: do not retry the same action, ask what to do instead. If the hooks
+  are not installed, prefer a route that needs no prompt; if there is none, say it is waiting at the laptop.
 
 Do not send progress chatter. Silence means "still working".
 
@@ -84,7 +91,7 @@ Bad: a recap of everything you did, with headings.
   This renders the page on the laptop and sends a phone-sized screenshot plus a **static snapshot** of
   the rendered page (your JS has already run; canvases become images; scripts are stripped).
 
-**The user's phone does not run JavaScript in HTML files** (Telegram's iOS viewer — verified). So what
+**Phones do not run JavaScript in HTML files opened from Telegram** (verified on iOS). So what
 they open is that frozen snapshot, and anything that needs interaction is lost. Design for it:
 - Everything important must be visible without clicking: no tabs, accordions, "show more", or
   hover-only values. Render every section expanded, one after another.
@@ -111,18 +118,23 @@ Keep it under ~20 MB.
 ## 6. Starting another session for them
 
 New sessions cannot be started from Telegram directly, but you can start one when they ask
-("start a session in chatdhd called blogposts"):
+("start a session in my-app called blogposts"):
 
-`tg spawn --project ~/research/chatdhd --name "blogposts"` (add `--task "…"` to give it work right away)
+`tg spawn --project ~/code/my-app --name "blogposts"` (add `--task "…"` to give it work right away;
+run it with the Bash `timeout` set to 600000, it may wait on their "Trust this folder?" tap)
 
 It opens a normal interactive `claude` in a new Terminal window in that folder, with the user's usual
-settings, and that session connects itself. Report the name it connected under. Remind them that with
+settings, and that session connects itself. If Claude Code has never opened that folder, the user first
+gets a "Trust the files in it?" button on Telegram; nothing launches without their tap. Report the name
+it connected under. Remind them that with
 several sessions connected they pick one by replying to its message or with /sessions. Only do this when
 asked, and never add permission-skipping flags to it.
 
 ## 7. Disconnect
 
-- The user is back at the terminal and done with Telegram → `tg bye`.
+- The user is back at the terminal and done with Telegram → `tg bye`. While connected, a permission
+  prompt in this session waits for their phone for up to 10 minutes before it appears at the laptop; if
+  they are back and want the local prompt, `tg bye` ends the relay at once.
 - `tg listen` says the session was ended (they sent `/end`, or it was replaced) → do not re-arm.
 
 ## Troubleshooting

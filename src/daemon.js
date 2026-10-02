@@ -115,7 +115,7 @@ async function main() {
     inboxDir: INBOX_DIR,
     saveConfig: () => writeJsonAtomic(CONFIG_FILE, config),
     saveState: () => writeJsonAtomic(STATE_FILE, state),
-    transcribe: makeTranscriber(),
+    transcribe: makeTranscriber(() => readJson(CONFIG_FILE, config)), // re-read: `tg setup voice` must work without a restart
     onLiveCountChange: (n) => caffeinate.set(n > 0),
   });
 
@@ -124,7 +124,7 @@ async function main() {
   const routes = {
     'GET /status': async () => {
       await bridge.topicsEnabled(); // cached; makes sure bot name and thread mode are known right after start
-      return { ...bridge.status(), pid: process.pid, caffeinate: caffeinate.on, voice: voiceSupport().ready, links: Boolean(config.tunnel?.enabled) };
+      return { ...bridge.status(), pid: process.pid, caffeinate: caffeinate.on, voice: voiceSupport(readJson(CONFIG_FILE, config)).ready, voiceProvider: voiceSupport(readJson(CONFIG_FILE, config)).provider, links: Boolean(config.tunnel?.enabled) };
     },
     'GET /session': async (_b, q) => bridge.sessionState(q.get('sessionId')),
     'POST /pair': async (b) => {
@@ -137,6 +137,7 @@ async function main() {
     'POST /project-emoji': (b) => bridge.setProjectEmoji(b.project, b.emoji),
     'POST /unregister': async (b) => ({ ended: await bridge.end(b.sessionId, b.reason || 'disconnected at the terminal') }),
     'POST /send': (b) => bridge.sendText(b.sessionId, b.text),
+    'POST /notify': (b) => bridge.notify(b.sessionId, b.type, b.detail),
     'POST /ack': (b) => bridge.ack(b.sessionId, b.upTo),
     'POST /send-file': async (b) => {
       const file = stagedFile(b.path);
@@ -177,6 +178,12 @@ async function main() {
         res.on('close', cancel);
         return send(200, await promise);
       }
+      if (key === 'POST /ask') {
+        const b = await readBody(req);
+        const { promise, cancel } = bridge.ask(b.sessionId, { text: b.text, options: b.options, timeoutMs: b.timeoutMs, kind: b.kind, allowText: b.allowText });
+        res.on('close', cancel); // the asker went away: close the question on the phone too
+        return send(200, await promise);
+      }
       const route = routes[key];
       if (!route) return send(404, { error: `unknown route ${key}` });
       const body = req.method === 'POST' ? await readBody(req) : {};
@@ -208,7 +215,7 @@ async function main() {
   process.on('uncaughtException', (e) => log(`uncaught: ${tg.redact(e.stack || e.message)}`));
   process.on('unhandledRejection', (e) => log(`unhandled: ${tg.redact(e?.stack || e)}`));
 
-  log(`daemon up, pid ${process.pid}, ${config.ownerId ? 'paired' : 'NOT paired'}, voice ${voiceSupport().ready ? 'ready' : 'unavailable'}`);
+  log(`daemon up, pid ${process.pid}, ${config.ownerId ? 'paired' : 'NOT paired'}, voice ${voiceSupport(config).ready ? `ready (${voiceSupport(config).provider})` : 'unavailable'}`);
 
   try {
     await tg.call('deleteWebhook', {});

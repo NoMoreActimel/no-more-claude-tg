@@ -1,11 +1,39 @@
 {
-  "name": "claude-tg",
-  "version": "0.1.0",
-  "description": "Private Telegram bridge to running Claude Code sessions",
+  "name": "no-more-claude-tg",
+  "version": "3.0.0",
+  "description": "Your own private Telegram bot for your running Claude Code sessions: chat, voice, files, reports, and permission prompts, from your phone",
   "type": "module",
-  "private": true,
-  "bin": { "tg": "bin/tg" },
-  "engines": { "node": ">=22" },
+  "license": "MIT",
+  "bin": {
+    "tg": "bin/tg"
+  },
+  "files": [
+    "bin",
+    "src",
+    "skill",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "keywords": [
+    "claude-code",
+    "claude",
+    "telegram",
+    "telegram-bot",
+    "remote",
+    "agent",
+    "whisper"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NoMoreActimel/no-more-claude-tg.git"
+  },
   "scripts": {
     "test": "node --test \"test/*.test.js\""
   }

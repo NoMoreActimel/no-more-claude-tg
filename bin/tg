@@ -1,11 +1,18 @@
 #!/bin/sh
-# Resolve the repo through the ~/.local/bin symlink, then run the CLI with whichever node exists.
-self=$(readlink -f "$0" 2>/dev/null || echo "$0")
-root=$(cd "$(dirname "$self")/.." && pwd)
+# Resolve symlinks by hand (readlink -f is missing on older macOS), then run the CLI with whichever node exists.
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case "$link" in
+    /*) self=$link ;;
+    *) self=$(dirname "$self")/$link ;;
+  esac
+done
+root=$(cd "$(dirname "$self")/.." && pwd -P)
 for n in node /opt/homebrew/bin/node /usr/local/bin/node; do
   if command -v "$n" >/dev/null 2>&1; then
     exec "$n" "$root/src/cli.js" "$@"
   fi
 done
-echo "tg: node not found" >&2
+echo "tg: node not found (install Node 22+ from https://nodejs.org)" >&2
 exit 127

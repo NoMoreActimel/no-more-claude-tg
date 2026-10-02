@@ -5,3 +5,5 @@ state.json
 *.log
 .env
 node_modules/
+.worktrees/
+.DS_Store

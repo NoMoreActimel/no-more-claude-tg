@@ -267,6 +267,120 @@ test('a project emoji can be pinned up front, and changing it renames connected 
   await assert.rejects(() => bridge.setProjectEmoji('/p/alpha', 'fire'), /one emoji/);
 });
 
+// ------------------------------------------------------------------ questions for the owner
+
+// let a fake-API round trip (all microtasks/immediates) finish
+const flush = async () => {
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+};
+
+const tap = (data, fromId = OWNER) => ({ update_id: updateId++, callback_query: { id: 'cq' + updateId, from: { id: fromId, is_bot: false }, message: { chat: { id: fromId, type: 'private' } }, data } });
+
+test('ask: the owner taps a button and the asker gets the choice; buttons are then removed', async () => {
+  const { tg, bridge } = make();
+  await reg(bridge, 's1');
+  tg.reset();
+  const pending = bridge.ask('s1', { text: 'Run `npm publish`?', options: ['Allow', 'Deny'], kind: 'permission', allowText: false }).promise;
+  await flush();
+  const asked = tg.sent()[0].params;
+  assert.ok(asked.text.startsWith('<b>🧬🐛 fix loader</b>'));
+  assert.deepEqual(asked.reply_markup.inline_keyboard.flat().map((b) => b.text), ['Allow', 'Deny']);
+  const [allowBtn] = asked.reply_markup.inline_keyboard.flat();
+  await bridge.handleUpdate(tap(allowBtn.callback_data));
+  assert.deepEqual(await pending, { choice: 'Allow', index: 0 });
+  const edit = tg.calls.find((c) => c.method === 'editMessageText');
+  assert.ok(edit && edit.params.text.endsWith('→ Allow'), 'the question shows the outcome');
+  assert.equal(bridge.asks.size, 0);
+  await bridge.handleUpdate(tap(allowBtn.callback_data)); // a second tap on the same button
+  assert.match(tg.calls.at(-1).params.text, /expired/);
+});
+
+test('ask: a stranger tapping the button changes nothing, and the owner can type the answer instead', async () => {
+  const { tg, bridge, state } = make();
+  await reg(bridge, 's1');
+  tg.reset();
+  const pending = bridge.ask('s1', { text: 'Which branch?', options: ['main', 'dev'] }).promise;
+  await flush();
+  const asked = tg.sent()[0];
+  const [mainBtn] = asked.params.reply_markup.inline_keyboard.flat();
+  await bridge.handleUpdate(tap(mainBtn.callback_data, STRANGER));
+  assert.equal(bridge.asks.size, 1, 'still open after a stranger tap');
+  assert.equal(tg.calls.filter((c) => c.method === 'answerCallbackQuery').length, 0, 'strangers get no acknowledgement');
+  const questionId = [...bridge.asks.values()][0].messageId;
+  await bridge.handleUpdate(dm(OWNER, 'release/3.0', { reply_to_message: { message_id: questionId, text: 'Which branch?' } }));
+  assert.deepEqual(await pending, { text: 'release/3.0', typed: true });
+  assert.equal(state.sessions.s1.queue.length, 0, 'a typed answer is not delivered as a new message');
+});
+
+test('ask: times out, and ending the session resolves its open questions', async () => {
+  let t = 0;
+  const tg = new FakeTelegram();
+  const bridge = new Bridge({ tg, config: { token: 't', ownerId: OWNER }, state: structuredClone(DEFAULT_STATE), saveConfig() {}, saveState() {}, inboxDir: os.tmpdir(), typing: false, now: () => t });
+  await reg(bridge, 's1');
+  await reg(bridge, 's2');
+  const quick = bridge.ask('s1', { text: 'quick?', options: ['a'], timeoutMs: 5000 }).promise;
+  const slow = bridge.ask('s2', { text: 'slow?', options: ['a'] }).promise;
+  await new Promise((r) => setTimeout(r, 5100));
+  assert.deepEqual(await quick, { timeout: true });
+  await bridge.end('s2', 'bye');
+  assert.deepEqual(await slow, { ended: true });
+  assert.throws(() => bridge.ask('s1', { text: '', options: ['a'] }), /text/);
+  assert.throws(() => bridge.ask('nope', { text: 'x', options: ['a'] }), /not registered/);
+});
+
+test('ask: a typed reply to a button-only question is refused, and the question stays open', async () => {
+  const { tg, bridge } = make();
+  await reg(bridge, 's1');
+  tg.reset();
+  const pending = bridge.ask('s1', { text: 'Run it?', options: ['Allow', 'Deny'], allowText: false }).promise;
+  await flush();
+  const q = tg.sent()[0];
+  assert.ok(!q.params.text.includes('reply to this message'), 'no typing hint on a button-only question');
+  const questionId = [...bridge.asks.values()][0].messageId;
+  await bridge.handleUpdate(dm(OWNER, 'yes', { reply_to_message: { message_id: questionId, text: 'Run it?' } }));
+  assert.equal(bridge.asks.size, 1, 'still open');
+  assert.match(tg.sent().at(-1).params.text, /Tap one of the buttons/);
+  const [allow] = q.params.reply_markup.inline_keyboard.flat();
+  await bridge.handleUpdate(tap(allow.callback_data));
+  assert.deepEqual(await pending, { choice: 'Allow', index: 0 });
+});
+
+test('ask: cancel (the asker went away) closes the question visibly; a later tap is told it expired', async () => {
+  const { tg, bridge } = make();
+  await reg(bridge, 's1');
+  tg.reset();
+  const { promise, cancel } = bridge.ask('s1', { text: 'Trust /p/new?', options: ['Trust and launch', 'Cancel'], allowText: false });
+  await flush();
+  const [trust] = tg.sent()[0].params.reply_markup.inline_keyboard.flat();
+  cancel();
+  assert.deepEqual(await promise, { cancelled: true });
+  await flush();
+  const edit = tg.calls.find((c) => c.method === 'editMessageText');
+  assert.match(edit.params.text, /stopped waiting/);
+  await bridge.handleUpdate(tap(trust.callback_data));
+  assert.match(tg.calls.at(-1).params.text, /expired/);
+  cancel(); // idempotent
+});
+
+test('notify: one alert per session and type, silent while a relay is pending or the listener is armed', async () => {
+  let t = 0;
+  const tg = new FakeTelegram();
+  const bridge = new Bridge({ tg, config: { token: 't', ownerId: OWNER }, state: structuredClone(DEFAULT_STATE), saveConfig() {}, saveState() {}, inboxDir: os.tmpdir(), typing: false, now: () => t });
+  await reg(bridge, 's1');
+  tg.reset();
+  assert.equal((await bridge.notify('s1', 'permission_prompt')).sent, true);
+  assert.match(tg.sent()[0].params.text, /waiting at the laptop for a permission prompt/);
+  assert.deepEqual(await bridge.notify('s1', 'permission_prompt'), { sent: false, reason: 'quiet' });
+  t += 11 * 60 * 1000;
+  const ask = bridge.ask('s1', { text: 'relay', options: ['Allow'] }).promise;
+  assert.deepEqual(await bridge.notify('s1', 'permission_prompt'), { sent: false, reason: 'relayed' });
+  bridge.listen('s1');
+  assert.deepEqual(await bridge.notify('s1', 'idle_prompt'), { sent: false, reason: 'listening' });
+  assert.equal((await bridge.notify('nope', 'idle_prompt')).sent, false);
+  await bridge.end('s1', 'done');
+  await ask;
+});
+
 test('names are kept short and emoji-free; duplicates get a number', async () => {
   const { bridge } = make();
   await assert.rejects(() => reg(bridge, 'a', 'this name has far too many words'), /too (many|long)/);
