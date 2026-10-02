@@ -175,6 +175,7 @@ test('single-chat mode: ambiguity asks, the picker selects, reply routing wins',
   assert.ok(tg.sent()[0].params.reply_markup, 'a picker is offered instead');
 
   await bridge.handleUpdate({ update_id: updateId++, callback_query: { id: 'c', from: { id: OWNER, is_bot: false }, message: { chat: { id: OWNER, type: 'private' } }, data: 'use:s1' } });
+  assert.match(tg.sent().at(-1).params.text, /Now talking to <b>🧬🐛 fix loader<\/b>/, 'the pick is confirmed in the chat, not only as a toast');
   await bridge.handleUpdate(dm(OWNER, 'now this goes to s1'));
   assert.equal(state.sessions.s1.queue.length, 1);
 

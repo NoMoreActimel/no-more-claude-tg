@@ -791,6 +791,13 @@ export class Bridge {
       const s = this.liveSessions().find((x) => x.id.startsWith(id));
       if (s) {
         this.state.activeSessionId = s.id;
+        // A toast disappears in a second; leave a line in the chat so it is clear where plain messages go now.
+        try {
+          const m = await this.say(s.threadId || null, `🎯 Now talking to <b>${escapeHtml(signature(s))}</b> — plain messages go there until another session writes.`);
+          this.remember(m.message_id, s.id);
+        } catch (e) {
+          this.log(`picker notice failed: ${e.message}`);
+        }
         this.saveState();
       }
       toast = s ? `Now talking to ${signature(s)}` : 'That session is gone';
