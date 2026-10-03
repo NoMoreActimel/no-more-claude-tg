@@ -1,15 +1,18 @@
 # no-more-claude-tg
 
-**Your own private Telegram bot for your running Claude Code sessions.** Leave the laptop, keep working from your phone.
+Claude Code in your Telegram. Your own bot. Only you can talk to it.
 
-- **All your sessions in one chat.** Each connected session appears as `🧬🐛 fix loader` and answers signed. Write to any of them; with topics on, each gets its own thread.
-- **Share results with one forward.** A report arrives as a phone-size screenshot plus a readable page. Forward that message to a friend or a group and they see exactly what you see.
-- **Permission prompts and Claude's questions as buttons.** Allow / Deny, or pick an option, and the session continues. Claude Code's own Remote Control cannot do this from a phone.
-- **Voice notes, transcribed on your Mac.** Free, any language, nothing leaves the machine. (OpenAI key optional.)
-- **Photos and files both ways**, and a new session started from the phone by asking a connected one.
-- **Only you.** The bot pairs with one Telegram account and silently ignores everyone else. No open ports, no cloud in between, zero npm dependencies.
+You leave the laptop. Claude keeps working. You keep talking to it from your phone.
 
-Two minutes to set up: create a bot with @BotFather, run `./bin/tg setup`, tap START.
+- Every session is a chat: `🛒🔑 fix login`, `🛒📊 weekly report`. Pick one, write.
+- Permission prompt? Tap Allow on your phone.
+- Claude has a question? Tap the answer.
+- Got a report? Forward it. Your friend sees what you see.
+- Voice notes work. Transcribed on your Mac, free.
+- Photos and files go both ways.
+- Need another session? Ask for one from the phone.
+
+Two minutes to set up. No dependencies.
 
 ## Setup (two minutes)
 
@@ -43,7 +46,7 @@ status` shows `threads: on` once that took.
 In any Claude Code session, before you walk away:
 
 ```
-/tg                 (or: /tg fix loader — words after /tg become the session name)
+/tg                 (or: /tg fix loader, words after /tg become the session name)
 ```
 
 Then in Telegram write to that session. Replies arrive signed with its name. Several sessions
@@ -52,7 +55,7 @@ wrote last; reply to a message to talk to another one, or pick with `/sessions`.
 
 | In Telegram | |
 |---|---|
-| `/sessions` | who is connected — 🟢 idle & listening, 🟡 mid-task |
+| `/sessions` | who is connected, 🟢 idle & listening, 🟡 mid-task |
 | `/ping` | is this session alive, anything queued |
 | `/end` | disconnect this session |
 | `/clean` | delete threads of ended sessions |
@@ -71,13 +74,13 @@ mishearings. **Photos and files** land in a private inbox and are handed to the 
 - **Questions from Claude** (the multiple-choice dialog, `AskUserQuestion`) → the options as buttons;
   tap one or reply with free text. Claude continues with your answer. Connected sessions can also ask
   directly with `tg ask`. (Claude Code has no hook for its question dialog; the bridge catches it through
-  the permission hook and hands the answer back as the tool's result — verified on 2.1.288.)
+  the permission hook and hands the answer back as the tool's result, verified on 2.1.288.)
 - **Waiting alerts.** If a connected session is stuck on something only the laptop can answer, you get
   one message saying so.
 - **Starting a session from the phone.** Ask any connected session "start a session in my-app called
   blogposts" and it runs `tg spawn`, which opens a normal `claude` in a new Terminal window there. A
   folder Claude Code has never opened first gets a "Trust the files in it?" button; nothing launches
-  without your tap. Nothing can start a session from a bare Telegram message — only a session you already
+  without your tap. Nothing can start a session from a bare Telegram message, only a session you already
   connected can, on your request.
 
 ### Reports
@@ -93,7 +96,7 @@ Telegram; the image and the page travel with it, nothing else is needed.
 
 ## Security model
 
-- **Identity is the numeric Telegram user id** captured at pairing — not the @username (changeable) and
+- **Identity is the numeric Telegram user id** captured at pairing, not the @username (changeable) and
   not the phone number (bots never see it).
 - **Pairing** uses a 10-character code from `crypto.randomBytes`, shown only in your terminal, valid 10
   minutes, single use; 3 wrong guesses lock an account out, 12 burn the code. Optionally the pairing
@@ -157,14 +160,14 @@ receiving and reading. Three hooks in `~/.claude/settings.json` keep a connected
 | Hook | What it does |
 |---|---|
 | `Stop` | refuses to let a connected session go idle without a listener armed |
-| `PermissionRequest` | relays the prompt to Telegram and returns your Allow/Deny — or, for Claude's question dialog, the option you tapped (up to 10 min) |
+| `PermissionRequest` | relays the prompt to Telegram and returns your Allow/Deny, or, for Claude's question dialog, the option you tapped (up to 10 min) |
 | `Notification` | sends one "waiting at the laptop" alert for prompts it cannot relay |
 
 Hooks print nothing for sessions that are not connected, so the rest of your Claude Code use is
 unchanged. `tg uninstall` removes exactly these three.
 
 While any session is connected the daemon holds `caffeinate -ims`, so the Mac does not idle-sleep. A
-closed lid on battery still sleeps it — leave it open and plugged in.
+closed lid on battery still sleeps it, leave it open and plugged in.
 
 ## Voice
 
@@ -173,7 +176,7 @@ download (`ggml-large-v3-turbo`, multilingual). A voice note takes a few seconds
 first one after a reboot ~30 s. No audio leaves your machine.
 
 Prefer the cloud? `tg setup voice --openai` stores an OpenAI key and uses `gpt-4o-mini-transcribe`
-(about $0.003 per minute of audio — a voice note costs well under a cent).
+(about $0.003 per minute of audio, a voice note costs well under a cent).
 
 ## Troubleshooting
 
@@ -195,7 +198,7 @@ Prefer the cloud? `tg setup voice --openai` stores an OpenAI key and uses `gpt-4
 ## For AI agents
 
 If a user asks you to set this up for them: clone the repository (or `npm install -g no-more-claude-tg`
-once published), then run `./bin/tg setup` *in a terminal they can see* — it needs their bot token typed in and their tap on the pairing
+once published), then run `./bin/tg setup` *in a terminal they can see*, it needs their bot token typed in and their tap on the pairing
 link; do not ask them to paste the token into the chat. Afterwards, the `/tg` skill in
 `~/.claude/skills/tg/SKILL.md` tells any session how to connect and how to behave on a phone-sized
 screen: short messages, `tg ask` for decisions, `tg report` for anything visual.
