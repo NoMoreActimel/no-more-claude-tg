@@ -1,20 +1,16 @@
 # no-more-claude-tg
 
-Claude Code in your Telegram. Your own bot. Only you can talk to it.
+Claude Code in your Telegram.
 
-You leave the laptop. Claude keeps working. You keep talking to it from your phone.
-
-- Every session is a chat: `🛒🔑 fix login`, `🛒📊 weekly report`. Pick one, write.
-- Permission prompt? Tap Allow on your phone.
+- Every session is a chat. Pick one, write.
+- Permission prompt? Tap Allow.
 - Claude has a question? Tap the answer.
-- Got a report? Forward it. Your friend sees what you see.
-- Voice notes work. Transcribed on your Mac, free.
-- Photos and files go both ways.
-- Need another session? Ask for one from the phone.
+- Got a report? Forward it.
+- Voice notes work.
 
-Two minutes to set up. No dependencies.
+Setup: tell your Claude Code to set up `https://github.com/NoMoreActimel/no-more-claude-tg`. It reads this file and does the rest.
 
-## Setup (two minutes)
+## Setup by hand
 
 You need: a Mac with [Node 22+](https://nodejs.org) and [Claude Code](https://docs.anthropic.com/en/docs/claude-code), a
 Telegram account, and your own bot token.
