@@ -9,8 +9,9 @@ Turn your laptop into a server. Talk to your Claude Code sessions through Telegr
 - Reply to any session, make them speak with each other, spawn new sessions.
 
 <p align="center">
-  <img src="docs/chat.jpg" width="330" alt="Telegram: three sessions answering, and a report with a chart">
-  <img src="docs/voice.jpg" width="330" alt="Telegram: the sessions list, a voice note to a session, its transcript, and the report it sent back">
+  <img src="docs/sessions.jpg" width="270" alt="Telegram: sessions answering, and a report with a chart">
+  <img src="docs/share.jpg" width="270" alt="Telegram: the sessions list with the Forward menu open">
+  <img src="docs/voice.jpg" width="270" alt="Telegram: a voice note to a session, its transcript, and the report it sent back">
 </p>
 
 Each session signs with a project emoji, a task emoji and a name: `🧪📊 eval report`.
