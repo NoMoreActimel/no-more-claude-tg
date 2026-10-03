@@ -1,14 +1,13 @@
 # no-more-claude-tg
 
-Claude Code in your Telegram.
+Turn your laptop into a server. Talk to your Claude Code sessions through Telegram.
 
-- Every session is a chat. Pick one, write.
-- Permission prompt? Tap Allow.
-- Claude has a question? Tap the answer.
-- Got a report? Forward it.
-- Voice notes work.
+- All your sessions in one chat.
+- Share your work with teammates in one forward.
+- Send voice messages to any session.
+- Get screenshots and HTML reports wherever you are.
 
-Setup: tell your Claude Code to set up `https://github.com/NoMoreActimel/no-more-claude-tg`. It reads this file and does the rest.
+Setup: tell your Claude Code to set up `https://github.com/NoMoreActimel/no-more-claude-tg`.
 
 ## Setup by hand
 
