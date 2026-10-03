@@ -1,23 +1,15 @@
 # no-more-claude-tg
 
-**Your own private Telegram bot for your running Claude Code sessions.** Walk away from the laptop and
-keep working with every session from your phone: text, voice notes, photos, files, reports, and the
-permission prompts that would otherwise leave a session stuck at the desk.
+**Your own private Telegram bot for your running Claude Code sessions.** Leave the laptop, keep working from your phone.
 
-```
- your phone ── Telegram ── your bot ──(outbound long-poll)── daemon on your Mac ──(unix socket)── Claude session
-                                                                │                                  ├─ Claude session
-                                                                └─ whisper · caffeinate · reports   └─ Claude session
-```
+- **All your sessions in one chat.** Each connected session appears as `🧬🐛 fix loader` and answers signed. Write to any of them; with topics on, each gets its own thread.
+- **Share results with one forward.** A report arrives as a phone-size screenshot plus a readable page. Forward that message to a friend or a group and they see exactly what you see.
+- **Permission prompts and Claude's questions as buttons.** Allow / Deny, or pick an option, and the session continues. Claude Code's own Remote Control cannot do this from a phone.
+- **Voice notes, transcribed on your Mac.** Free, any language, nothing leaves the machine. (OpenAI key optional.)
+- **Photos and files both ways**, and a new session started from the phone by asking a connected one.
+- **Only you.** The bot pairs with one Telegram account and silently ignores everyone else. No open ports, no cloud in between, zero npm dependencies.
 
-- **One bot, all your sessions.** Each session that runs `/tg` shows up as `🧬🐛 fix loader`: a project
-  emoji, a task emoji, a short name. Write to any of them; replies come back signed.
-- **Only you.** The bot pairs with exactly one Telegram account and silently ignores everyone else.
-  Nothing listens on the network; the daemon only makes outbound calls to Telegram.
-- **Prompts on your phone.** A permission prompt in a connected session arrives as Allow / Deny buttons.
-  Claude's own questions arrive as option buttons.
-- **Reports that open on a phone.** `tg report x.html` sends a screenshot and a pre-rendered copy.
-- Zero npm dependencies. macOS first (Linux works without sleep control, autostart and `tg spawn`).
+Two minutes to set up: create a bot with @BotFather, run `./bin/tg setup`, tap START.
 
 ## Setup (two minutes)
 
@@ -96,6 +88,9 @@ and sent as a screenshot plus a **static snapshot**: scripts already run, canvas
 scripts stripped. Telegram's in-app viewer on iOS does not run JavaScript, so that snapshot is what you
 can actually read; `--with-original` also sends the interactive file for later.
 
+**Sharing:** forward the report message (or any screenshot a session sent) to a person or a group in
+Telegram; the image and the page travel with it, nothing else is needed.
+
 ## Security model
 
 - **Identity is the numeric Telegram user id** captured at pairing — not the @username (changeable) and
@@ -144,6 +139,12 @@ pbpaste | tg set-token                replace the bot token
 ```
 
 ## How it works
+
+```
+ your phone ── Telegram ── your bot ──(outbound long-poll)── daemon on your Mac ──(unix socket)── Claude session
+                                                                │                                  ├─ Claude session
+                                                                └─ whisper · caffeinate · reports   └─ Claude session
+```
 
 A single daemon owns the bot (Telegram allows one poller per token). Every session on the machine talks
 to it over the unix socket, so it does not matter which Claude account a session is logged into.
