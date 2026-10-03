@@ -6,6 +6,14 @@ Turn your laptop into a server. Talk to your Claude Code sessions through Telegr
 - Share your work with teammates in one forward.
 - Send voice messages to any session.
 - Get screenshots and HTML reports wherever you are.
+- Reply to any session, make them speak with each other, spawn new sessions.
+
+<p align="center">
+  <img src="docs/chat.jpg" width="330" alt="Telegram: three sessions answering, and a report with a chart">
+  <img src="docs/voice.jpg" width="330" alt="Telegram: the sessions list, a voice note to a session, its transcript, and the report it sent back">
+</p>
+
+Each session signs with a project emoji, a task emoji and a name: `🧪📊 eval report`.
 
 Setup: tell your Claude Code to set up `https://github.com/NoMoreActimel/no-more-claude-tg`.
 
@@ -19,7 +27,7 @@ Telegram account, and your own bot token.
    bot's password; never paste it into a chat.
 2. **Install and run the wizard** (no dependencies to install):
    ```sh
-   git clone git@github.com:NoMoreActimel/no-more-claude-tg.git
+   git clone https://github.com/NoMoreActimel/no-more-claude-tg.git
    cd no-more-claude-tg && ./bin/tg setup
    ```
    (Once the package is on npm: `npm install -g no-more-claude-tg && tg setup`.)
