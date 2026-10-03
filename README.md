@@ -27,11 +27,12 @@ Telegram account, and your own bot token.
 1. **Create your bot.** In Telegram open [@BotFather](https://t.me/BotFather), send `/newbot`, pick a name and a
    username ending in `bot`. Copy the token it gives you (looks like `123456789:AAF…`). That token is the
    bot's password; never paste it into a chat.
-2. **Install and run the wizard:**
+2. **Install and run the wizard** (no dependencies to install):
    ```sh
-   npm install -g no-more-claude-tg      # or: git clone … && cd no-more-claude-tg && ./bin/tg setup
-   tg setup
+   git clone git@github.com:NoMoreActimel/no-more-claude-tg.git
+   cd no-more-claude-tg && ./bin/tg setup
    ```
+   (Once the package is on npm: `npm install -g no-more-claude-tg && tg setup`.)
    It asks for the token (typed invisibly), checks it, saves it to `~/.config/claude-tg/config.json`
    (readable only by you), links the `tg` command, installs the `/tg` skill and three hooks into
    `~/.claude/settings.json` (merged, backup kept), starts the daemon at login, offers to set up voice
@@ -192,8 +193,8 @@ Prefer the cloud? `tg setup voice --openai` stores an OpenAI key and uses `gpt-4
 
 ## For AI agents
 
-If a user asks you to set this up for them: install with `npm install -g no-more-claude-tg`, then run
-`tg setup` *in a terminal they can see* — it needs their bot token typed in and their tap on the pairing
+If a user asks you to set this up for them: clone the repository (or `npm install -g no-more-claude-tg`
+once published), then run `./bin/tg setup` *in a terminal they can see* — it needs their bot token typed in and their tap on the pairing
 link; do not ask them to paste the token into the chat. Afterwards, the `/tg` skill in
 `~/.claude/skills/tg/SKILL.md` tells any session how to connect and how to behave on a phone-sized
 screen: short messages, `tg ask` for decisions, `tg report` for anything visual.
