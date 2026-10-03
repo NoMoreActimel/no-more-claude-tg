@@ -14,6 +14,17 @@ const ASK_MAX_MS = 60 * 60 * 1000;
 const ASK_MAX_OPTIONS = 12;
 const ASK_TEXT_LIMIT = 2500; // Telegram messages cap at 4096 chars after HTML escaping
 const NOTIFY_QUIET_MS = 10 * 60 * 1000;
+const SESSION_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const RESERVED_KEYS = new Set(['__proto__', 'constructor', 'prototype']); // writing these as plain-object keys changes the object itself
+const HTML_LIMIT = 4000; // Telegram caps a message at 4096 characters, measured after HTML escaping
+export const COMMANDS = [
+  { command: 'sessions', description: 'Connected Claude sessions' },
+  { command: 'ping', description: 'Is this session alive?' },
+  { command: 'end', description: 'Disconnect this session' },
+  { command: 'status', description: 'Bridge health' },
+  { command: 'clean', description: 'Delete threads of ended sessions' },
+  { command: 'help', description: 'How this works' },
+];
 const NOTIFY_LABELS = {
   permission_prompt: 'a permission prompt it could not relay',
   idle_prompt: 'your next instruction',
@@ -82,7 +93,7 @@ export class Bridge {
   }
 
   live(sessionId) {
-    const s = this.state.sessions[sessionId];
+    const s = Object.hasOwn(this.state.sessions, sessionId) ? this.state.sessions[sessionId] : null;
     return s && !s.endedAt ? s : null;
   }
 
@@ -113,6 +124,17 @@ export class Bridge {
 
   liveChanged() {
     this.onLiveCountChange(this.liveSessions().length);
+  }
+
+  /** The slash-command menu, visible in the owner's chat only, so the bot's profile gives strangers nothing. */
+  async publishCommands() {
+    if (!this.paired) return;
+    try {
+      await this.tg.call('deleteMyCommands', {});
+      await this.tg.call('setMyCommands', { commands: COMMANDS, scope: { type: 'chat', chat_id: this.config.ownerId } });
+    } catch (e) {
+      this.log(`setMyCommands failed: ${e.message}`);
+    }
   }
 
   async topicsEnabled(force = false) {
@@ -208,18 +230,19 @@ export class Bridge {
 
   async register({ sessionId, name, emoji, projectEmoji, project, pid }) {
     this.requirePaired();
-    if (!sessionId) throw new Error('sessionId is required');
+    if (!SESSION_ID.test(String(sessionId || '')) || RESERVED_KEYS.has(sessionId)) throw new Error('sessionId must be 1-64 letters, digits, _ or - (and not a reserved name)');
     const cleanName = validateName(name);
     const cleanEmoji = validateEmoji(emoji, '--emoji');
     const projectKey = project || 'unknown';
-    let pe = this.state.projectEmojis[projectKey];
+    let pe = Object.hasOwn(this.state.projectEmojis, projectKey) ? this.state.projectEmojis[projectKey] : null;
     if (!pe) {
       pe = validateEmoji(projectEmoji, '--project-emoji');
       this.state.projectEmojis[projectKey] = pe;
     }
 
-    const s = this.state.sessions[sessionId] || { id: sessionId, queue: [], threadId: null, createdAt: this.now() };
-    const wasLive = Boolean(this.state.sessions[sessionId]) && !s.endedAt;
+    const existing = Object.hasOwn(this.state.sessions, sessionId) ? this.state.sessions[sessionId] : null;
+    const s = existing || { id: sessionId, queue: [], threadId: null, createdAt: this.now() };
+    const wasLive = Boolean(existing) && !s.endedAt;
     Object.assign(s, { name: cleanName, emoji: cleanEmoji, projectEmoji: pe, project: projectKey, pid: pid || null, endedAt: null, registeredAt: this.now() });
     s.name = this.uniqueName(s);
     this.state.sessions[sessionId] = s;
@@ -288,10 +311,12 @@ export class Bridge {
     const ids = [];
     for (const chunk of chunkText(body)) {
       const m = await this.inThread(s, async (threadId) => {
+        const html = `<b>${escapeHtml(sig)}</b>\n${renderBody(chunk)}`;
         try {
-          return await this.say(threadId, `<b>${escapeHtml(sig)}</b>\n${renderBody(chunk)}`);
+          if (html.length > HTML_LIMIT) throw Object.assign(new Error('rendered text too long for one message'), { code: 400, local: true });
+          return await this.say(threadId, html);
         } catch (e) {
-          if (e.code !== 400 || !/parse|entit/i.test(e.message)) throw e;
+          if (!e.local && (e.code !== 400 || !/parse|entit/i.test(e.message))) throw e;
           const params = { chat_id: this.config.ownerId, text: `${sig}\n${chunk}`, link_preview_options: { is_disabled: true } };
           if (threadId) params.message_thread_id = threadId;
           return this.tg.call('sendMessage', params);
@@ -418,8 +443,12 @@ export class Bridge {
       inline_keyboard[inline_keyboard.length - 1].push({ text: label.slice(0, 60), callback_data: `q:${id}:${i}` });
     });
     const hint = allowText ? `\n<i>${labels.length ? 'Tap a button, or reply' : 'Reply'} to this message to answer.</i>` : '';
-    const plain = String(text).slice(0, ASK_TEXT_LIMIT);
-    const html = `<b>${escapeHtml(signature(s))}</b>\n${renderBody(plain)}${hint}`;
+    let plain = String(text).slice(0, ASK_TEXT_LIMIT);
+    let html = `<b>${escapeHtml(signature(s))}</b>\n${renderBody(plain)}${hint}`;
+    while (html.length > HTML_LIMIT && plain.length > 200) {
+      plain = plain.slice(0, Math.floor(plain.length * 0.8)) + '\n… (cut to fit)';
+      html = `<b>${escapeHtml(signature(s))}</b>\n${renderBody(plain)}${hint}`;
+    }
     // Pending from this moment, so a Notification-hook alert arriving while the question is being sent
     // already sees it as relayed. The timer starts now too, so no answer path can outlive the entry.
     const entry = { id, sessionId: s.id, messageId: null, html, labels, kind, allowText, at: this.now() };
@@ -509,7 +538,7 @@ export class Bridge {
     const key = `${sessionId}:${type}`;
     if (this.notified.has(key) && this.now() - this.notified.get(key) < NOTIFY_QUIET_MS) return { sent: false, reason: 'quiet' };
     this.notified.set(key, this.now());
-    const what = NOTIFY_LABELS[type] || escapeHtml(String(type || 'input').replace(/_/g, ' '));
+    const what = Object.hasOwn(NOTIFY_LABELS, type) ? NOTIFY_LABELS[type] : escapeHtml(String(type || 'input').replace(/_/g, ' '));
     const extra = detail ? `\n<i>${escapeHtml(String(detail).slice(0, 300))}</i>` : '';
     await this.inThread(s, (threadId) => this.say(threadId, `⏸ <b>${escapeHtml(signature(s))}</b> is waiting at the laptop for ${what}.${extra}`)).then((m) => this.remember(m.message_id, s.id));
     this.saveState();
@@ -614,7 +643,8 @@ export class Bridge {
     }
     this.config.ownerId = msg.from.id;
     this.saveConfig();
-    this.log(`paired with Telegram user id ${msg.from.id}`);
+    this.log('paired');
+    await this.publishCommands();
     const threads = await this.topicsEnabled(true);
     await this.say(
       null,

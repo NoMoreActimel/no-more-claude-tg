@@ -164,9 +164,12 @@ test('full flow: pair → register → receive → reply → file → hook → d
   assert.ok(calls('sendDocument')[0].params.raw.includes('a,b'));
   await until(() => fs.readdirSync(path.join(home, 'outbox')).length === 0, 'outbox cleaned');
 
-  // --- the daemon refuses to upload anything that was not staged by the CLI
+  // --- the daemon refuses to upload anything that was not staged by the CLI, including the outbox itself
   const direct = await rawApi('POST', '/send-file', { sessionId: 'e2e-session-1', path: path.join(home, 'config.json') });
   assert.match(direct.error, /not staged/);
+  const asDir = await rawApi('POST', '/send-file', { sessionId: 'e2e-session-1', path: path.join(home, 'outbox') });
+  assert.match(asDir.error, /not staged/);
+  assert.ok(fs.existsSync(path.join(home, 'outbox')), 'the outbox survives a bad request');
 
   // --- disconnect
   assert.match((await tg('bye')).stdout, /disconnected/);
@@ -176,6 +179,10 @@ test('full flow: pair → register → receive → reply → file → hook → d
   // --- nothing sensitive in the log
   const log = fs.readFileSync(path.join(home, 'daemon.log'), 'utf8');
   assert.ok(!log.includes(TOKEN) && !log.includes('rerun with seed 2') && !log.includes('delete everything'));
+  assert.ok(!log.includes(String(OWNER)), 'the owner id is not logged either');
+  const menu = calls('setMyCommands').at(-1).params;
+  assert.deepEqual(menu.scope, { type: 'chat', chat_id: OWNER }, 'the command menu is scoped to the owner chat');
+  assert.ok(calls('deleteMyCommands').length >= 1, 'the global menu is cleared');
 });
 
 function runHook(input) {

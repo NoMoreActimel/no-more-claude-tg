@@ -4,7 +4,10 @@ import path from 'node:path';
 import { MODELS_DIR, TOOL_PATH } from './paths.js';
 
 export const MODEL_NAME = 'ggml-large-v3-turbo.bin';
-export const MODEL_URL = `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${MODEL_NAME}`;
+// Pinned to a commit and a checksum: the loader is native code, so the file must be exactly this one.
+export const MODEL_COMMIT = '5359861c739e955e79d9a303bcbc70fb988958b1';
+export const MODEL_SHA256 = '1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69';
+export const MODEL_URL = `https://huggingface.co/ggerganov/whisper.cpp/resolve/${MODEL_COMMIT}/${MODEL_NAME}`;
 export const MODEL_PATH = path.join(MODELS_DIR, MODEL_NAME);
 export const OPENAI_MODEL = 'gpt-4o-mini-transcribe';
 

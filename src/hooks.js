@@ -15,7 +15,13 @@ export async function readStdinJson() {
   }
 }
 
-const fence = (s) => '```\n' + String(s).replace(/```/g, "''' ").slice(0, 1500) + '\n```';
+const FENCE_LIMIT = 1500;
+// Never let the owner approve something they could not see: a cut command says so, loudly.
+const fence = (s, limit = FENCE_LIMIT) => {
+  const t = String(s).replace(/```/g, "''' ");
+  const cut = t.length > limit;
+  return '```\n' + t.slice(0, limit) + '\n```' + (cut ? `\n⚠️ ${t.length - limit} more characters not shown. Deny, or check at the laptop.` : '');
+};
 const short = (v, n = 600) => {
   const s = typeof v === 'string' ? v : JSON.stringify(v ?? '');
   return s.length > n ? s.slice(0, n) + '…' : s;
@@ -28,11 +34,12 @@ export function describeTool(toolName, input = {}) {
     case 'PowerShell':
       return `**Run a command**${input.description ? `\n${short(input.description, 200)}` : ''}\n${fence(input.command || '')}`;
     case 'Write':
-      return `**Write file** \`${short(input.file_path, 200)}\` (${String(input.content || '').length} chars)`;
+      return `**Write file** \`${short(input.file_path, 200)}\` (${String(input.content || '').length} chars)\n${fence(input.content || '', 400)}`;
     case 'Edit':
+      return `**Edit file** \`${short(input.file_path, 200)}\`\nreplace:\n${fence(input.old_string ?? '', 300)}\nwith:\n${fence(input.new_string ?? '', 300)}`;
     case 'MultiEdit':
     case 'NotebookEdit':
-      return `**Edit file** \`${short(input.file_path || input.notebook_path, 200)}\``;
+      return `**Edit file** \`${short(input.file_path || input.notebook_path, 200)}\`\n${fence(short(input, 600), 600)}`;
     case 'Read':
       return `**Read file** \`${short(input.file_path, 200)}\``;
     case 'WebFetch':

@@ -382,6 +382,17 @@ test('notify: one alert per session and type, silent while a relay is pending or
   await ask;
 });
 
+test('session ids are validated, so __proto__ and friends cannot reach the prototype', async () => {
+  const { bridge, state } = make();
+  for (const bad of ['__proto__', 'constructor', 'a b', '', 'x'.repeat(65)]) {
+    await assert.rejects(() => reg(bridge, bad), /sessionId must be/);
+  }
+  assert.equal(bridge.live('__proto__'), null);
+  assert.equal(Object.prototype.endedAt, undefined, 'prototype untouched');
+  await reg(bridge, 'ok-id_1');
+  assert.ok(state.sessions['ok-id_1']);
+});
+
 test('names are kept short and emoji-free; duplicates get a number', async () => {
   const { bridge } = make();
   await assert.rejects(() => reg(bridge, 'a', 'this name has far too many words'), /too (many|long)/);

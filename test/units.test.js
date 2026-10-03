@@ -2,7 +2,13 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { extractCode, isFromOwner, newCode } from '../src/auth.js';
 import { chunkText, renderBody, safeFileName } from '../src/format.js';
+import { describeTool } from '../src/hooks.js';
 import { findLocalRefs } from '../src/report.js';
+import { sha256File } from '../src/setup.js';
+import { Tunnel } from '../src/tunnel.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { Telegram } from '../src/telegram.js';
 
 test('pairing codes are long, unambiguous and parsed from deep links', () => {
@@ -57,6 +63,33 @@ test('local references in a report are caught; inlined and remote ones are fine'
     <a href="#top">top</a>`;
   assert.deepEqual(findLocalRefs(html).sort(), ['./app.js', 'bg.png', 'file:///Users/me/a.csv', 'plots/loss.png', 'results.json', 'style.css'].sort());
   assert.deepEqual(findLocalRefs('<script>const data = {"a":1}</script><img src="data:image/png;base64,AA">'), []);
+});
+
+test('a relayed command that had to be cut says so; Write and Edit show what changes', () => {
+  const long = 'echo start; ' + 'x'.repeat(2000) + '; rm -rf /';
+  const shown = describeTool('Bash', { command: long });
+  assert.ok(!shown.includes('rm -rf /'), 'the tail is not shown');
+  assert.match(shown, /⚠️ \d+ more characters not shown\. Deny/);
+  assert.ok(!describeTool('Bash', { command: 'ls' }).includes('not shown'));
+  assert.match(describeTool('Write', { file_path: '/etc/hosts', content: '127.0.0.1 evil' }), /127\.0\.0\.1 evil/);
+  const edit = describeTool('Edit', { file_path: 'a.js', old_string: 'const a = 1', new_string: 'const a = 2' });
+  assert.match(edit, /replace:[\s\S]*const a = 1[\s\S]*with:[\s\S]*const a = 2/);
+});
+
+test('sha256File matches the shell checksum', () => {
+  const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-sha-')), 'blob');
+  fs.writeFileSync(f, 'hello whisper\n'.repeat(1000));
+  const { execFileSync } = process.getBuiltinModule('node:child_process');
+  const expected = execFileSync('shasum', ['-a', '256', f], { encoding: 'utf8' }).split(' ')[0];
+  assert.equal(sha256File(f), expected);
+});
+
+test('the tunnel answers 404 to a malformed percent-encoding instead of hanging', () => {
+  const t = new Tunnel();
+  const res = { writeHead(code) { this.code = code; }, end() { this.ended = true; } };
+  t.handle({ method: 'GET', url: '/r/' + 'a'.repeat(64) + '/%E0' }, res);
+  assert.equal(res.code, 404);
+  assert.equal(res.ended, true);
 });
 
 test('the bot token never appears in error messages', async () => {

@@ -49,7 +49,11 @@ export class Tunnel {
     if (req.method !== 'GET' && req.method !== 'HEAD') return deny();
     const m = (req.url || '').split('?')[0].match(/^\/r\/([0-9a-f]{64})\/([^/]+)$/);
     const link = m && this.links.get(m[1]);
-    if (!link || this.now() > link.expiresAt || decodeURIComponent(m[2]) !== link.name) return deny();
+    let name = null;
+    try {
+      name = m && decodeURIComponent(m[2]);
+    } catch {}
+    if (!link || this.now() > link.expiresAt || name !== link.name) return deny();
     res.writeHead(200, {
       'content-type': TYPES[path.extname(link.name).toLowerCase()] || 'application/octet-stream',
       'cache-control': 'no-store',

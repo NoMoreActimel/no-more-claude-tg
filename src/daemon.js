@@ -5,7 +5,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { Bridge } from './bridge.js';
 import { Caffeinate } from './caffeinate.js';
-import { CONFIG_FILE, HOME_DIR, INBOX_DIR, LOG_FILE, OUTBOX_DIR, SOCKET_PATH, STATE_FILE } from './paths.js';
+import { CONFIG_FILE, HOME_DIR, INBOX_DIR, LOG_FILE, OUTBOX_DIR, PUBLISHED_DIR, SOCKET_PATH, STATE_FILE } from './paths.js';
 import { DEFAULT_CONFIG, DEFAULT_STATE, ensurePrivateDir, readJson, writeJsonAtomic } from './store.js';
 import { Telegram } from './telegram.js';
 import { Tunnel } from './tunnel.js';
@@ -81,10 +81,12 @@ function readBody(req) {
   });
 }
 
-// The daemon only ever uploads files the CLI staged in the private outbox.
+// The daemon only ever uploads files the CLI staged in the private outbox: a regular file, one level down
+// (outbox/<random>/<name>), so cleaning its staging dir can never touch anything else.
 function stagedFile(p) {
   const real = fs.realpathSync(String(p || ''));
-  if (!real.startsWith(fs.realpathSync(OUTBOX_DIR) + path.sep)) throw new Error('file is not staged in the outbox');
+  const outbox = fs.realpathSync(OUTBOX_DIR);
+  if (!fs.statSync(real).isFile() || path.dirname(path.dirname(real)) !== outbox) throw new Error('file is not staged in the outbox');
   return real;
 }
 
@@ -217,19 +219,11 @@ async function main() {
 
   log(`daemon up, pid ${process.pid}, ${config.ownerId ? 'paired' : 'NOT paired'}, voice ${voiceSupport(config).ready ? `ready (${voiceSupport(config).provider})` : 'unavailable'}`);
 
+  fs.rmSync(PUBLISHED_DIR, { recursive: true, force: true }); // report copies from a previous run are dead links
   try {
     await tg.call('deleteWebhook', {});
     await bridge.topicsEnabled(true);
-    await tg.call('setMyCommands', {
-      commands: [
-        { command: 'sessions', description: 'Connected Claude sessions' },
-        { command: 'ping', description: 'Is this session alive?' },
-        { command: 'end', description: 'Disconnect this session' },
-        { command: 'status', description: 'Bridge health' },
-        { command: 'clean', description: 'Delete threads of ended sessions' },
-        { command: 'help', description: 'How this works' },
-      ],
-    });
+    await bridge.publishCommands();
   } catch (e) {
     log(`startup calls failed: ${e.message}`);
   }

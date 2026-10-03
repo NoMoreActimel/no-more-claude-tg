@@ -8,7 +8,7 @@ import { CONFIG_FILE, HOME_DIR, MODELS_DIR, REPO_DIR, SERVICE_LABEL, SERVICE_PLI
 import { DEFAULT_CONFIG, ensurePrivateDir, readJson, writeJsonAtomic } from './store.js';
 // (writeJsonAtomic is for files under ~/.config/claude-tg only — it makes the parent private)
 import { Telegram } from './telegram.js';
-import { MODEL_PATH, MODEL_URL, voiceSupport, which } from './voice.js';
+import { MODEL_PATH, MODEL_SHA256, MODEL_URL, voiceSupport, which } from './voice.js';
 
 // Claude Code keeps its settings, skills and the trusted-folder list under this directory.
 export const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
@@ -24,8 +24,13 @@ const q = (s) => `"${String(s).replace(/(["\\$`])/g, '\\$1')}"`;
 // For files in directories this tool does not own (~/.claude): atomic, but never chmod the parent.
 function writeJsonInPlace(file, data, mode = 0o644) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
+  let keep = mode;
+  try {
+    keep = fs.statSync(file).mode & 0o777 & mode; // the stricter of what is there and what we ask: never relax, may tighten
+  } catch {}
   const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', { mode });
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', { mode: keep });
+  fs.chmodSync(tmp, keep); // umask may have narrowed it
   fs.renameSync(tmp, file);
 }
 
@@ -218,6 +223,18 @@ export function saveConfig(patch) {
 }
 
 /** Local Whisper: Homebrew packages plus the multilingual model. Streams the installer output to the terminal. */
+export function sha256File(file) {
+  const hash = crypto.createHash('sha256');
+  const fd = fs.openSync(file, 'r');
+  const buf = Buffer.alloc(8 * 1024 * 1024);
+  try {
+    for (let n; (n = fs.readSync(fd, buf, 0, buf.length, null)) > 0; ) hash.update(buf.subarray(0, n));
+  } finally {
+    fs.closeSync(fd);
+  }
+  return hash.digest('hex');
+}
+
 export function installLocalVoice(out) {
   const brew = which('brew');
   if (!which('ffmpeg') || !which('whisper-cli')) {
@@ -230,8 +247,14 @@ export function installLocalVoice(out) {
     fs.mkdirSync(MODELS_DIR, { recursive: true });
     out(`downloading the speech model (1.6 GB, one time) to ${MODELS_DIR}…`);
     const part = `${MODEL_PATH}.part`;
-    const r = spawnSync('curl', ['-L', '--fail', '--retry', '3', '-C', '-', '--progress-bar', '-o', part, MODEL_URL], { stdio: 'inherit' });
+    const r = spawnSync(which('curl') || '/usr/bin/curl', ['-L', '--fail', '--retry', '3', '-C', '-', '--progress-bar', '-o', part, MODEL_URL], { stdio: 'inherit' });
     if (r.status !== 0) throw new Error('model download failed; run `tg setup voice` again to resume');
+    out('checking the download…');
+    const got = sha256File(part);
+    if (got !== MODEL_SHA256) {
+      fs.rmSync(part, { force: true });
+      throw new Error(`model checksum mismatch (got ${got.slice(0, 12)}…, expected ${MODEL_SHA256.slice(0, 12)}…); the file was deleted. Run \`tg setup voice\` again`);
+    }
     fs.renameSync(part, MODEL_PATH);
   }
   return voiceSupport({}).local;

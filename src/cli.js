@@ -200,13 +200,18 @@ const commands = {
     const before = new Set((await api('GET', '/status')).sessions.map((s) => s.id));
     execFileSync('open', ['-a', 'Terminal', `${stem}.command`]);
     out(`opened a new Terminal window: claude in ${dir}`);
-    for (let waited = 0; waited < 150000; waited += 3000) {
-      await sleep(3000);
-      const fresh = (await api('GET', '/status')).sessions.find((s) => !before.has(s.id));
-      if (fresh) return out(`connected as: ${fresh.signature}  (after ${Math.round((waited + 3000) / 1000)}s). With several sessions connected, the user reaches it by replying to its messages or via /sessions.`);
+    try {
+      for (let waited = 0; waited < 150000; waited += 3000) {
+        await sleep(3000);
+        const fresh = (await api('GET', '/status')).sessions.find((s) => !before.has(s.id));
+        if (fresh) return out(`connected as: ${fresh.signature}  (after ${Math.round((waited + 3000) / 1000)}s). With several sessions connected, the user reaches it by replying to its messages or via /sessions.`);
+      }
+      out('the window opened, but no new session registered within 150s — it may be waiting on a prompt at the laptop. Check `tg status` later.');
+      process.exitCode = 3;
+    } finally {
+      // the task text is read by claude at start; nothing needs these files afterwards
+      for (const f of [`${stem}.prompt`, `${stem}.command`]) fs.rm(f, { force: true }, () => {});
     }
-    out('the window opened, but no new session registered within 150s — it may be waiting on a prompt at the laptop. Check `tg status` later.');
-    process.exitCode = 3;
   },
 
   async 'project-emoji'({ flags, rest }) {
@@ -406,16 +411,17 @@ const commands = {
   async service({ rest, quiet = false }) {
     const uid = process.getuid();
     if (rest[0] === 'install') {
+      const x = (v) => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>${SERVICE_LABEL}</string>
-  <key>ProgramArguments</key><array><string>${process.execPath}</string><string>${DAEMON_ENTRY}</string></array>
+  <key>ProgramArguments</key><array><string>${x(process.execPath)}</string><string>${x(DAEMON_ENTRY)}</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <key>ThrottleInterval</key><integer>30</integer>
   <key>ProcessType</key><string>Background</string>
-  <key>WorkingDirectory</key><string>${os.homedir()}</string>
+  <key>WorkingDirectory</key><string>${x(os.homedir())}</string>
   <key>EnvironmentVariables</key><dict><key>PATH</key><string>${TOOL_PATH}</string></dict>
 </dict></plist>
 `;
@@ -541,6 +547,7 @@ const commands = {
     }
     out('');
     out('Done. In any Claude Code session type  /tg  before you walk away. `tg doctor` checks everything.');
+    out('Recommended in @BotFather: /setjoingroups → Disable, and topics for private chats (a thread per session).');
   },
 
   async doctor() {
